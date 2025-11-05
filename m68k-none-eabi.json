@@ -1,0 +1,35 @@
+{
+    "arch": "m68k",
+    "crt-static-respected": true,
+    "data-layout": "E-m:e-p:32:16:32-i8:8:8-i16:16:16-i32:16:32-n8:16:32-a:0:16-S16",
+    "dynamic-linking": true,
+    "env": "none",
+    "executables": true,
+    "has-rpath": true,
+    "linker-is-gnu": true,
+    "panic-strategy": "abort",
+    "llvm-target": "m68k-unknown-none-elf",
+    "max-atomic-width": 0,
+    "os": "none",
+    "cpu": "M68000",
+    "metadata": {
+      "description": "Motorola 680x0",
+      "host_tools": false,
+      "std": false,
+      "tier": 3
+    },
+    "position-independent-executables": false,
+    "code-model": "medium",
+    "relocation-model": "static",
+    "pre-link-args": {
+      "gcc": [
+        "-Wl,--as-needed",
+        "-Wl,-z,noexecstack"
+      ]
+    },
+    "disable-redzone": true,
+    "relro-level": "full",
+    "target-endian": "big",
+    "target-family": "none",
+    "target-pointer-width": 32
+  }

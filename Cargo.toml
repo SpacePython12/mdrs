@@ -1,0 +1,28 @@
+[package]
+name = "mdrs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# [lib]
+# crate-type = ["bin"]
+
+[[bin]]
+name="mdrs"
+path="src/main.rs"
+
+[profile.dev]
+opt-level = 1
+# panic="abort"
+
+[profile.release]
+opt-level = 3
+# panic="abort"
+
+[dependencies]
+const-default = { version = "1.0.0", default-features = false, features = ["derive"] }
+critical-section = { version = "1.2.0", features = ["restore-state-u16"] }
+fixed = "1.29.0"
+heapless = "0.9.1"
+

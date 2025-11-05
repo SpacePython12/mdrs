@@ -1,0 +1,3 @@
+[toolchain]
+channel = "nightly"
+targets = ["m68k-unknown-none-elf"]

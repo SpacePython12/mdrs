@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.cargo.allTargets": false,
+    "rust-analyzer.check.targets": "${workspaceFolder}/m68k-none-eabi.json",
+    "rust-analyzer.cargo.target": "${workspaceFolder}/m68k-none-eabi.json",
+}

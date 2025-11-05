@@ -1,0 +1,12 @@
+[build]
+target = "m68k-none-eabi.json"
+# rustflags = ["-Ctarget-feature=+crt-static", "-Crelocation-model=static", "-Ccode-model=kernel"]
+
+[target.m68k-none-eabi]
+linker = "m68k-linux-gnu-ld"
+rustflags = ["-Clink-args=-Tmegadrive.ld", "-Clink-args=-nostdlib"]
+
+[unstable]
+unstable-options = true
+build-std = ["core", "alloc", "compiler_builtins"]
+no-jump-tables = true
