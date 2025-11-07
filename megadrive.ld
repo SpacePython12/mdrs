@@ -7,7 +7,7 @@ MEMORY
 SECTIONS
 {
     _stack_top = 0x01000000;
-    _stack_bottom = _stack_top - 0x1000;
+    _stack_bottom = _stack_top - 0x2000;
 
     .text :
     {

@@ -3,6 +3,7 @@ pub mod vdp;
 pub mod libc;
 pub mod alloc;
 pub mod io;
+pub mod fixed;
 
 use critical_section as cs;
 

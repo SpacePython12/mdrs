@@ -14,6 +14,8 @@
 
 use core::num::NonZero;
 
+use fixed::types::{I8F8, I16F16};
+
 use crate::sys::{io, vdp};
 
 extern crate alloc;
@@ -31,7 +33,7 @@ const PALETTE: &[u16] = &[
 pub fn main() -> ! {
     
     let mut settings = vdp::Settings::DEFAULT;
-    settings.set_scroll_mode(vdp::HScrollMode::FullScroll, vdp::VScrollMode::FullScroll);
+    settings.set_scroll_mode(vdp::HScrollMode::Screen, vdp::VScrollMode::Screen);
     settings.apply::<true>();
 
     vdp::DMACommand::new_fill(vdp::VRAMAddress::from_word_addr(0), 0x10000, 0, None).schedule().map_err(|_| ()).unwrap();
@@ -64,7 +66,7 @@ pub fn main() -> ! {
             unsafe { core::mem::MaybeUninit::array_assume_init(tiles) }
         });
 
-        for y in 0..28u8 {
+        for y in 0..32u8 {
             vdp::Writer::new(vdp::Address::VRAM(settings.plane_a_tile(0, y))).with_autoinc(Some(2)).write(MESSAGE_TILES.as_slice());
         }
     }

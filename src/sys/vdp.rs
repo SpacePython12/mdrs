@@ -166,8 +166,8 @@ impl WindowClip {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VScrollMode {
     #[default]
-    FullScroll = 0,
-    DoubleCellScroll = 1,
+    Screen = 0,
+    Columns = 1,
 }
 
 /// This enumeration is for configuring how horizontal scrolling works.
@@ -175,9 +175,9 @@ pub enum VScrollMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HScrollMode {
     #[default]
-    FullScroll = 0b00,
-    CellScroll = 0b10,
-    LineScroll = 0b11,
+    Screen = 0b00,
+    Rows = 0b10,
+    Lines = 0b11,
 }
 
 /// The interlacing rendering mode.
@@ -541,6 +541,16 @@ pub trait VRAMData: Send + Sync + 'static {
     }
 }
 
+impl<T: Send + Sync + 'static, const N: usize> VRAMData for [T; N] where [T]: VRAMData {
+    fn as_words(&self) -> &[u16] {
+        VRAMData::as_words(self.as_slice())
+    }
+
+    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+        VRAMData::as_word_pairs(self.as_slice())
+    }
+}
+
 impl VRAMData for u16 {
     #[inline]
     fn as_words(&self) -> &[u16] {
@@ -844,7 +854,7 @@ impl Settings {
 
     #[inline]
     pub fn set_scroll_mode(&mut self, hscroll: HScrollMode, vscroll: VScrollMode) {
-        self.modify_mode(((hscroll as u32) << 16) | ((vscroll as u32) << 18), 0x30000);
+        self.modify_mode(((hscroll as u32) << 16) | ((vscroll as u32) << 18), 0x70000);
     }
 
     #[inline]

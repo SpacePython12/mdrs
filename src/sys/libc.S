@@ -1,31 +1,135 @@
     .global __mulsi3
 __mulsi3: 
-    link    %a6,#-8
-    movem.l %d2-%d3,(%sp)
-    movem.l 8(%a6),%d2-%d3 // d2 = a, d3 = b
+    move.w  4(%sp),%d0  // Move high word of x into d0
+    mulu.w  10(%sp),%d0 // Multiply high word of x with low word of y
+    move.w  8(%sp),%d1  // Move high word of y into d1
+    move.w  6(%sp),%d1  // Multiply high word of y with low word of x
+    add.w   %d1,%d0
+    swap    %d0
 
-    move.w  %d2,%d0 
-    mulu.w  %d3,%d0 // d0 = al x bl
-
-    swap    %d2 
-    move.w  %d2,%d1
-    mulu.w  %d3,%d1
-    swap    %d1
-    clr.w   %d1
-    add.l   %d1,%d0 
-
-    swap    %d3
-    swap    %d2
-    move.w  %d2,%d1
-    mulu.w  %d3,%d1
-    swap    %d1
-    clr.w   %d1
+    move.w  6(%sp),%d1  // Move low word of x into d1
+    mulu.w  10(%sp),%d1 // Multiply low word of x with low word of y
     add.l   %d1,%d0
 
-    movem.l (%sp),%d2-%d3
-    unlk    %a6
     rts
 
+    .global __modsi3
+__modsi3:
+    move.l  8(%sp),%d1  // Load divisor into d1
+    move.l  4(%sp),%d0  // Load dividend into d0
+
+    move.l  %d1,-(%sp)  // Push divisor to argument 1
+    move.l  %d0,-(%sp)  // Push dividend to argument 0
+    bsr.s   __divsi3    // Jump to signed division routine
+    addq.l  #8,%sp      // Deallocate arguments
+
+    move.l  8(%sp),%d1  // Load divisor into d1
+    move.l  %d1,-(%sp)  // Push divisor to argument 1
+    move.l  %d0,-(%sp)  // Push dividend to argument 0
+    bsr.s   __mulsi3    // Jump to multiplication routine
+    addq.l  #8,%sp      // Deallocate arguments
+
+    move.l  4(%sp),%d1  // Load dividend into d1
+    sub.l   %d0,%d1     // d1 = dividend - quotient x divisor
+    move.l  %d1,%d0
+
+    rts
+
+    .global __umodsi3
+__umodsi3:
+    move.l  8(%sp),%d1  // Load divisor into d1
+    move.l  4(%sp),%d0  // Load dividend into d0
+
+    move.l  %d1,-(%sp)  // Push divisor to argument 1
+    move.l  %d0,-(%sp)  // Push dividend to argument 0
+    bsr.s   __udivsi3   // Jump to unsigned division routine
+    addq.l  #8,%sp      // Deallocate arguments
+
+    move.l  8(%sp),%d1  // Load divisor into d1
+    move.l  %d1,-(%sp)  // Push divisor to argument 1
+    move.l  %d0,-(%sp)  // Push dividend to argument 0
+    bsr.s   __mulsi3    // Jump to multiplication routine
+    addq.l  #8,%sp      // Deallocate arguments
+
+    move.l  4(%sp),%d1  // Load dividend into d1
+    sub.l   %d0,%d1     // d1 = dividend - quotient x divisor
+    move.l  %d1,%d0
+
+    rts
+
+    .global __divsi3
+__divsi3:
+    move.l  %d2,-(%sp)  // Save d2
+    
+    moveq   #1,%d2      // Load sign of quotient into d2
+    move.l  12(%sp),%d1 // Load divisor into d1
+    bpl.s   1f          // If divisor is positive, skip ahead
+    neg.l   %d1         // Negate the divisor
+    neg.b   %d2         // Flip the sign
+
+1:  move.l  8(%sp),%d0  // Load dividend into d0
+    bpl.s   1f          // If dividend is positive, skip ahead
+    neg.l   %d0         // Negate the dividend
+    neg.b   %d2         // Flip the sign
+
+1:  move.l  %d1,-(%sp)  // Push divisor to argument 1
+    move.l  %d0,-(%sp)  // Push dividend to argument 0
+    bsr     __udivsi3   // Jump to unsigned division routine
+    addq.l  #8,%sp      // Deallocate arguments
+
+    tst.b   %d2         // Check if sign is negative
+    bpl.s   1f          // If sign is positive, skip ahead
+    neg.l   %d0         // Negate the quotient
+
+1:  move.l  (%sp)+,%d2  // Restore d2
+    rts
+
+    .global __udivsi3
+__udivsi3:
+	move.l  %d2,-(%sp)  // Save d2
+    move.l  8(%sp),%d0  // Load dividend into d0
+    move.l  12(%sp),%d1 // Load divisor into d1
+
+    cmpi.l  #0x10000,%d1 // Is divisor greater than 2^16?
+    bcc.s   1f          // If it is, try the next algorithm
+    move.l  %d0,%d2
+    clr.w   %d2
+    swap    %d2
+    divu.w  %d1,%d2     // Upper quotient in lower word
+    move.w  %d2,%d0     // Save upper quotient
+    swap    %d0
+    move.w  10(%sp),%d2 // Lower dividend + upper rest
+    divu.w  %d1,%d2     // Lower quotient
+    move.w  %d2,%d0
+    bra.s   2f
+
+1:  move.l  %d1,%d2     // Use d2 as divisor backup
+1:  lsr.l   #1,%d1      // Shift divisor down
+    lsr.l   #1,%d0      // Shift dividend down
+    cmpi.l  #0x10000,%d1 // Is divisor still greater than 2^16?
+    bcc.s   1b          // If it is, do it again!
+    divu.w  %d1,%d0     // Now we have 16 bit divisor
+    andi.l  #0xFFFF,%d0 // Mask out divisor
+
+/* Multiply the 16 bit tentative quotient with the 32 bit divisor.  Because of
+   the operand ranges, this might give a 33 bit product.  If this product is
+   greater than the dividend, the tentative quotient was too large. */
+
+    move.l  %d2,%d1
+    mulu.w  %d0,%d1     // Low part, 32 bits
+    swap    %d2
+    mulu.w  %d0,%d2     // High part, no more than 17 bits
+    swap    %d2         // Align high part with low part
+    tst.w   %d2         // Is the high part 17 bits?
+    bne.s   1f          // If it is, the quotient is too large
+    add.l   %d2,%d1     // Add parts together
+    bcs.s   1f          // Quotient was too large and overflowed
+    cmp.l   8(%sp),%d1  // Is the sum greater than the divident?
+    bls.w   2f          // If it is, the quotient is too large
+1:  subq.l  #1,%d0      // Adjust quotient
+
+2:  move.l  (%sp)+,%d2  // Restore d2
+    rts
 
 // for copy pseudofunctions: a0 = dst, a1 = src, d1 = len, d0 = scratch (when going backward src and dst are the END of the array)
 
