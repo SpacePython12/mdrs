@@ -2,6 +2,7 @@ use core::num::NonZero;
 use core::ptr;
 use core::mem;
 use core::cell;
+use core::sync::atomic;
 
 use critical_section as cs;
 
@@ -31,7 +32,7 @@ impl VRAMAddress {
 
     #[inline]
     pub const fn from_tile_index(index: u16) -> Self {
-        Self((index & 0x7FF) << 5)
+        Self((index & 0x7FF) << 4)
     }
 }
 
@@ -176,6 +177,7 @@ pub enum VScrollMode {
 pub enum HScrollMode {
     #[default]
     Screen = 0b00,
+    Invalid = 0b01,
     Rows = 0b10,
     Lines = 0b11,
 }
@@ -272,7 +274,7 @@ impl PlaneSize {
 /// render planes.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct TileFlags(u16);
+pub struct TileFlags(pub u16);
 
 impl TileFlags {
     const PRIORITY_FLAG: u16 = 0x8000;
@@ -532,10 +534,10 @@ pub trait VRAMData: Send + Sync + 'static {
     fn as_words(&self) -> &[u16];
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
         let (pairs, single) = self.as_words().as_chunks::<2>();
         (
-            unsafe { core::slice::from_raw_parts(pairs.as_ptr() as *const [u16; 2], pairs.len()) },
+            unsafe { core::slice::from_raw_parts(pairs.as_ptr() as *const u32, pairs.len()) },
             single.first()
         )
     }
@@ -546,7 +548,7 @@ impl<T: Send + Sync + 'static, const N: usize> VRAMData for [T; N] where [T]: VR
         VRAMData::as_words(self.as_slice())
     }
 
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
         VRAMData::as_word_pairs(self.as_slice())
     }
 }
@@ -558,9 +560,9 @@ impl VRAMData for u16 {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
         (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<[u16; 2]>(), 0) },
+            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
             Some(self)
         )
     }
@@ -580,9 +582,9 @@ impl VRAMData for i16 {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
         (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<[u16; 2]>(), 0) },
+            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
             Some(unsafe { &*(&raw const *self).cast::<u16>() })
         )
     }
@@ -602,9 +604,9 @@ impl VRAMData for TileFlags {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
         (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<[u16; 2]>(), 0) },
+            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
             Some(unsafe { &*(&raw const *self).cast::<u16>() })
         )
     }
@@ -624,8 +626,8 @@ impl VRAMData for Tile {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<[u16; 2]>(), 8) }, None)
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
+        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 8) }, None)
     }
 }
 
@@ -636,8 +638,8 @@ impl VRAMData for [Tile] {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<[u16; 2]>(), self.len() << 3) }, None)
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
+        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u32>(), self.len() << 3) }, None)
     }
 }
 
@@ -648,8 +650,8 @@ impl VRAMData for Sprite {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<[u16; 2]>(), 2) }, None)
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
+        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 2) }, None)
     }
 }
 
@@ -660,8 +662,8 @@ impl VRAMData for [Sprite] {
     }
 
     #[inline]
-    fn as_word_pairs(&self) -> (&[[u16; 2]], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<[u16; 2]>(), self.len() << 1) }, None)
+    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
+        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u32>(), self.len() << 1) }, None)
     }
 }
 
@@ -1142,7 +1144,7 @@ impl Writer {
         unsafe {
             let (pairs, extra) = data.as_ref().as_word_pairs();
             for &pair in pairs {
-                ptr::write_volatile(VDP_DATA_PORT as *mut [u16; 2], pair);
+                ptr::write_volatile(VDP_DATA_PORT as *mut u32, pair);
             }
             if let Some(&extra) = extra {
                 ptr::write_volatile(VDP_DATA_PORT as *mut u16, extra);
@@ -1165,11 +1167,11 @@ impl Writer {
                     }
                 }
                 for &pair in pairs {
-                    ptr::write_volatile(VDP_DATA_PORT as *mut [u16; 2], pair);
+                    ptr::write_volatile(VDP_DATA_PORT as *mut u32, pair);
                 }
                 if let Some(&extra) = extra {
                     if let Some(last_extra) = last_extra.take() {
-                        ptr::write_volatile(VDP_DATA_PORT as *mut [u16; 2], [last_extra, extra]);
+                        ptr::write_volatile(VDP_DATA_PORT as *mut u32, mem::transmute([last_extra, extra]));
                     } else {
                         last_extra.replace(extra);
                     }
@@ -1210,23 +1212,23 @@ impl VDP {
 
     #[inline]
     pub fn wait_for_vblank(handler: Option<fn(cs::CriticalSection)>) {
-        fn null_handler(_cs: cs::CriticalSection) {}
         unsafe {
-            Self::set_vint_handler(handler.unwrap_or(null_handler));
+            Self::set_vint_handler(handler);
             Self::vint_wait();
         }
     }
 
     #[inline]
-    unsafe fn set_vint_handler(handler: fn(cs::CriticalSection)) {
+    unsafe fn set_vint_handler(handler: Option<fn(cs::CriticalSection)>) {
         // We use volatile reads to force the compiler to not optimize or reorder things.
-        ptr::write_volatile(&raw mut VINT_HANDLER, Some(handler));
+        ptr::write_volatile(VINT_HANDLER.as_mut_ptr(), handler);
     }
 
     #[inline(never)]
     unsafe fn vint_wait() {
-        while ptr::read_volatile(&raw const VINT_HANDLER).is_some() {
-            core::hint::spin_loop();
+        VINT_FLAG.store(true, atomic::Ordering::Relaxed);
+        while VINT_FLAG.load(atomic::Ordering::Relaxed) {
+            super::stop::<1>();
         }
     }
 
@@ -1423,7 +1425,7 @@ impl<const N: usize> DmaQueue<N> {
     }
 
     #[inline]
-    pub fn increment(&self, i: u8) -> u8 {
+    fn increment(&self, i: u8) -> u8 {
         unsafe {
             let out: u8;
             core::arch::asm!(
@@ -1440,7 +1442,7 @@ impl<const N: usize> DmaQueue<N> {
     }
 
     #[inline]
-    pub fn decrement(&self, i: u8) -> u8 {
+    fn decrement(&self, i: u8) -> u8 {
         unsafe {
             let out: u8;
             core::arch::asm!(
@@ -1530,45 +1532,40 @@ impl<const N: usize> DmaQueue<N> {
 
 static DMA_QUEUE: cs::Mutex<cell::RefCell<DmaQueue<32>>> = cs::Mutex::new(cell::RefCell::new(DmaQueue::INIT));
 
-#[repr(C)]
-struct VIntData {
-    data: Option<ptr::NonNull<()>>,
-    vtable: mem::MaybeUninit<ptr::DynMetadata<dyn FnOnce(cs::CriticalSection)>>
-}
+static VINT_FLAG: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
-/// The static storage for the vertical interrupt handler. Should this be bounded by some kind of mutex? Yes. Do I care right now? No.
-static mut VINT_HANDLER: Option<fn(cs::CriticalSection)> = None;
+static HINT_FLAG: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
-static mut HINT_HANDLER: Option<fn()> = None;
+static mut VINT_HANDLER: mem::MaybeUninit<Option<fn(cs::CriticalSection)>> = mem::MaybeUninit::uninit();
+
+static mut HINT_HANDLER: mem::MaybeUninit<fn()> = mem::MaybeUninit::uninit();
 
 /// The vertical interrupt handler. 
 /// 
 /// This is called whenever the electron beam finishes the last scanline, and has entered the vertical blanking period.
 #[no_mangle]
 unsafe fn _vblank() {
+    
     while !VDP::status().in_vblank() {
         core::hint::spin_loop();
     }
 
     super::with_cs::<1, 7, _>(|cs| {
-        {
-            let p1 = super::io::P1_CONTROLLER.borrow(cs);
-            let p2 = super::io::P2_CONTROLLER.borrow(cs);
-            p1.set(p1.get().update());
-            p2.set(p2.get().update());
-        }
+
+        super::io::P1_CONTROLLER.update();
+        super::io::P2_CONTROLLER.update();
 
         if VDP::status().dma_in_progress() {
             return;
         }
 
-        let handler = ptr::read_volatile(&raw const VINT_HANDLER); // Read the handler pointer
-        if let Some(handler) = handler {
+        if VINT_FLAG.load(atomic::Ordering::Acquire) {
+            let handler = ptr::read_volatile(VINT_HANDLER.as_ptr()); // Read the handler pointer
+            if let Some(handler) = handler {
+                handler(cs)
+            }
 
-            handler(cs);
-            
-            // Set handler to null to indicate vblank has happened
-            ptr::write_volatile(&raw mut VINT_HANDLER, None);
+            VINT_FLAG.store(false, atomic::Ordering::Release);
         }
         let mut queue = DMA_QUEUE.borrow_ref_mut(cs);
         'queue_loop: loop {
@@ -1593,8 +1590,8 @@ unsafe fn _vblank() {
 
 #[no_mangle]
 unsafe fn _hblank() {
-    let handler = ptr::read_volatile(&raw const HINT_HANDLER);
-    if let Some(handler) = handler {
+    if HINT_FLAG.load(atomic::Ordering::Acquire) {
+        let handler = ptr::read_volatile(HINT_HANDLER.as_ptr()); // Read the handler pointer
         handler();
     }
 }

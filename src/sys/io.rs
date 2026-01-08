@@ -153,29 +153,47 @@ impl IOPort for Modem {
     const TXDATA: *mut u8 = 0xA1001B as *mut _;
 }
 
-pub static P1_CONTROLLER: cs::Mutex<cell::Cell<ControllerState<Player1>>> = cs::Mutex::new(cell::Cell::new(ControllerState::new(Player1)));
-pub static P2_CONTROLLER: cs::Mutex<cell::Cell<ControllerState<Player2>>> = cs::Mutex::new(cell::Cell::new(ControllerState::new(Player2)));
+pub static P1_CONTROLLER: ControllerState<Player1> = ControllerState::new(Player1);
+pub static P2_CONTROLLER: ControllerState<Player2> = ControllerState::new(Player2);
 
+#[repr(u8)]
 #[derive(Clone, Copy)]
-pub struct ControllerState<P: IOPort>(u16, u16, P);
+pub enum ControllerButton {
+    Up = 0,
+    Down = 1,
+    Left = 2,
+    Right = 3,
+    B = 4,
+    C = 5,
+    A = 6,
+    Start = 7,
+    Z = 8,
+    Y = 9,
+    X = 10,
+    Mode = 11,
+}
+
+pub struct ControllerState<P: IOPort>(core::sync::atomic::AtomicU16, core::sync::atomic::AtomicU16, P);
 
 impl<P: IOPort> ControllerState<P> {
     pub const fn new(port: P) -> Self {
-        Self(0, 0, port)
+        Self(
+            core::sync::atomic::AtomicU16::new(0), 
+            core::sync::atomic::AtomicU16::new(0), 
+            port
+        )
     }
 
-    pub fn init(self) -> Self {
+    pub fn init(&self) {
         with_paused_z80(|guard| {
             P::configure(guard, 0x40);
             P::write(guard, 0x40);
         });
-        self
     }
 
     #[inline(never)]
-    pub fn update(mut self) -> Self {
-        self.1 = self.0;
-        self.0 = with_paused_z80(|guard| {
+    pub fn update(&self) {
+        let new = with_paused_z80(|guard| {
             // 1st step
             P::write(guard, 0x40);
             unsafe { core::arch::asm!("nop","nop","nop","nop") }
@@ -210,55 +228,30 @@ impl<P: IOPort> ControllerState<P> {
 
             !((first & 0x3F) | ((second & 0x30) << 2) | ((third & 0xF) << 8))
         });
-        self
+        let old = self.0.load(core::sync::atomic::Ordering::Acquire);
+        let change = old ^ new;
+        self.1.store(change, core::sync::atomic::Ordering::Relaxed);
+        self.0.store(new, core::sync::atomic::Ordering::Release);
     }
 
-    pub fn start(&self) -> bool {
-        self.0 & 0x080 != 0
+    pub fn held(&self, button: ControllerButton) -> bool {
+        let mask = 1u16 << button as u8;
+        let state = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        state & mask != 0
     }
 
-    pub fn a(&self) -> bool {
-        self.0 & 0x040 != 0
+    pub fn pressed(&self, button: ControllerButton) -> bool {
+        let mask = 1u16 << button as u8;
+        let state = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        let change = self.1.load(core::sync::atomic::Ordering::Relaxed);
+        (state & change) & mask != 0
     }
 
-    pub fn b(&self) -> bool {
-        self.0 & 0x010 != 0
-    }
-
-    pub fn c(&self) -> bool {
-        self.0 & 0x020 != 0
-    }
-
-    pub fn up(&self) -> bool {
-        self.0 & 0x001 != 0
-    }
-
-    pub fn down(&self) -> bool {
-        self.0 & 0x002 != 0
-    }
-
-    pub fn left(&self) -> bool {
-        self.0 & 0x004 != 0
-    }
-
-    pub fn right(&self) -> bool {
-        self.0 & 0x008 != 0
-    }
-
-    pub fn mode(&self) -> bool {
-        self.0 & 0x800 != 0
-    }
-
-    pub fn x(&self) -> bool {
-        self.0 & 0x400 != 0
-    }
-
-    pub fn y(&self) -> bool {
-        self.0 & 0x200 != 0
-    }
-
-    pub fn z(&self) -> bool {
-        self.0 & 0x100 != 0
+    pub fn released(&self, button: ControllerButton) -> bool {
+        let mask = 1u16 << button as u8;
+        let state = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        let change = self.1.load(core::sync::atomic::Ordering::Relaxed);
+        (!state & change) & mask != 0
     }
 }
 

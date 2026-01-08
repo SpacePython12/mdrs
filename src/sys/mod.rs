@@ -1,5 +1,6 @@
 
 pub mod vdp;
+pub mod vdp_new;
 pub mod libc;
 pub mod alloc;
 pub mod io;
@@ -7,7 +8,7 @@ pub mod fixed;
 
 use critical_section as cs;
 
-use crate::sys::alloc::MDSpecializeAlloc;
+use crate::sys::alloc::MDSpecAlloc;
 
 extern "C" {
     static _data_src: u8;
@@ -73,27 +74,46 @@ pub unsafe fn _init() {
 
     ALLOCATOR.init();
 
-    with_cs::<1, 7, _>(|cs| {
-        let p1 = io::P1_CONTROLLER.borrow(cs);
-        let p2 = io::P2_CONTROLLER.borrow(cs);
-        p1.set(p1.get().init());
-        p2.set(p2.get().init());
-    });
+    io::P1_CONTROLLER.init();
+    io::P2_CONTROLLER.init();
 }
 
 #[global_allocator]
-static ALLOCATOR: MDSpecializeAlloc = MDSpecializeAlloc::new();
+static ALLOCATOR: MDSpecAlloc = MDSpecAlloc::new();
 
-/// Sets the 68k's interrupt mask bits to the specified constant.
+/// Sets the 68k's interrupt mask bits to the specified constant. 
 /// 
-/// Unfortunately, due to an LLVM compiler bug, we have to use a temporary register here. See issue [#165077](https://github.com/llvm/llvm-project/issues/165077).
+/// Requires supervisor mode, otherwise this will trap.
+/// 
+/// Right now, this uses a __VERY HACKY FIX__, and uses a literal hexadecimal opcode. FIXME when LLVM issue [#165077](https://github.com/llvm/llvm-project/issues/165077) is fixed.
 #[inline]
-pub unsafe fn set_int_level<const LEVEL: u8>() {
+pub unsafe fn move_sr<const LEVEL: u8>() {
+    // core::arch::asm!(
+    //     "move.w #{lvl},%sr",
+    //     lvl = const (0x2000i16 | (((LEVEL & 0x7) as i16) << 8)),
+    // )
+
     core::arch::asm!(
-        "move.w #{lvl},{tmp}",
-        "move.w {tmp},%sr",
-        lvl = const (0x2000i16 | (((LEVEL & 0x7) as i16) << 8)),
-        tmp = out(reg_data) _
+        ".short 0x46FC, {lvl}",
+        lvl = const (0x2000i16 | (((LEVEL & 0x7) as i16) << 8))
+    )
+}
+
+/// Sets the 68k's interrupt mask bits to the specified constant, and stops the processor until an exception, trap, or interrupt occurs. 
+/// 
+/// Requires supervisor mode, otherwise this will trap.
+/// 
+/// Right now, this uses a __VERY HACKY FIX__, and uses a literal hexadecimal opcode. FIXME when LLVM issue [#165077](https://github.com/llvm/llvm-project/issues/165077) is fixed.
+#[inline]
+pub unsafe fn stop<const LEVEL: u8>() {
+    // core::arch::asm!(
+    //     "stop #{lvl}",
+    //     lvl = const (0x2000i16 | (((LEVEL & 0x7) as i16) << 8)),
+    // )
+
+    core::arch::asm!(
+        ".short 0x4E72, {lvl}", // 4E72 = stop #imm
+        lvl = const (0x2000i16 | (((LEVEL & 0x7) as i16) << 8))
     )
 }
 
@@ -113,11 +133,11 @@ pub fn with_cs<const OUTER: u8, const INNER: u8, R>(f: impl FnOnce(cs::CriticalS
     impl<const RESTORE: u8> Drop for Guard<RESTORE> {
         #[inline(always)]
         fn drop(&mut self) {
-            unsafe { set_int_level::<RESTORE>(); }
+            unsafe { move_sr::<RESTORE>(); }
         }
     }
 
-    unsafe { set_int_level::<INNER>(); }
+    unsafe { move_sr::<INNER>(); }
     let _guard = Guard::<OUTER>;
 
     unsafe { f(cs::CriticalSection::new()) }

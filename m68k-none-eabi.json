@@ -9,7 +9,7 @@
     "linker-is-gnu": true,
     "panic-strategy": "abort",
     "llvm-target": "m68k-unknown-none-elf",
-    "max-atomic-width": 0,
+    "max-atomic-width": 16,
     "os": "none",
     "cpu": "M68000",
     "metadata": {

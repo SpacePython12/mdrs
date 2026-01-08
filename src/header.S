@@ -43,10 +43,10 @@ _vector_table:
 
 _rom_header: //          16 |            32 |    40 |    48 |
     .ascii "SEGA GENESIS/MD "
-    .ascii "(C)SPPY 2024.APR"
+    .ascii "(C)SPPY 2026.JAN"
     .ascii "GENESIS TESTER                                  "
     .ascii "GENESIS TESTER                                  "
-    .ascii "GM 11111110-00"
+    .ascii "GM 00000000-00"
     .short 0x0000
     .ascii "J6              "
     .long 0x000000
@@ -109,25 +109,6 @@ _addr_err:
     lea     8(%sp),%sp // Set up rte...
     move.w   #0x2100,%sr // Re-enable interrupts
     rte // ...and return back to branch!
-
-    .global _disable_ints
-_disable_ints:
-    move.w  %sr,%d0
-    move.w  %d0,%d1
-    ori.w   #0x0700,%d1
-    move.w  %d1,%sr
-    andi.w  #0x0700,%d0
-    rts
-
-    .global _enable_ints
-_enable_ints:
-    move.w  6(%sp),%d0
-    andi.w  #0x0700,%d0
-    not.w   %d0
-    move.w  %sr,%d1
-    and.w   %d0,%d1
-    move.w  %d1,%sr
-    rts
 
 .global abort
 abort:

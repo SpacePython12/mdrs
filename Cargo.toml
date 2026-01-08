@@ -21,6 +21,7 @@ opt-level = 3
 # panic="abort"
 
 [dependencies]
+bitflags = "2.10.0"
 const-default = { version = "1.0.0", default-features = false, features = ["derive"] }
 critical-section = { version = "1.2.0", features = ["restore-state-u16"] }
 fixed = "1.29.0"

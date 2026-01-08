@@ -14,9 +14,9 @@ const fn heap_size() -> usize {
 /// A specialized allocator, taking advantage of the fact that RAM is only 64 kB, and can be addressed fully with a u16, rather than a usize.
 /// 
 /// As a result, block headers are tiny; only a single word!
-pub struct MDSpecializeAlloc;
+pub struct MDSpecAlloc;
 
-impl MDSpecializeAlloc {
+impl MDSpecAlloc {
     #[inline]
     const fn root_block(&self) -> NonNull<BlockHeader> {
         unsafe { NonNull::new_unchecked((&raw mut _heap_start).cast()) }
@@ -44,12 +44,9 @@ impl MDSpecializeAlloc {
                 if curr_block.satisfies_layout(layout) {
                     // Current block has a suitable size, so break
                     break;
-                } else {
-                    current = curr_block.next();
                 }
-            } else {
-                current = curr_block.next();
             }
+            current = curr_block.next();
         }
         current
     }
@@ -95,7 +92,7 @@ impl MDSpecializeAlloc {
     }
 }
 
-unsafe impl core::alloc::GlobalAlloc for MDSpecializeAlloc {
+unsafe impl core::alloc::GlobalAlloc for MDSpecAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = super::with_cs::<1, 7, _>(|_| self.allocate(layout));
 
