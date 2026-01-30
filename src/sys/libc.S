@@ -2,8 +2,8 @@
 __mulsi3: 
     move.w  4(%sp),%d0  // Move high word of x into d0
     mulu.w  10(%sp),%d0 // Multiply high word of x with low word of y
-    move.w  8(%sp),%d1  // Move high word of y into d1
-    move.w  6(%sp),%d1  // Multiply high word of y with low word of x
+    move.w  6(%sp),%d1  // Move high word of y into d1
+    mulu.w  8(%sp),%d1  // Multiply high word of y with low word of x
     add.w   %d1,%d0
     swap    %d0
 

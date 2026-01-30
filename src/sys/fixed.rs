@@ -2,7 +2,7 @@ use fixed::types::U0F32;
 use fixed::{FixedI8, FixedI16, FixedI32};
 use fixed::types::extra::{IsLessOrEqual, True, U5, U6, U8, U13, U14, U16, U29, U30, U32, Unsigned};
 
-use crate::include_bytes_aligned_as;
+use crate::include_as;
 
  
 pub trait FixedCordic: 
@@ -125,8 +125,8 @@ where
     }
 }
 
-const ATAN_TABLE: &'static [u32] = include_bytes_aligned_as!(u32, "atan_u0f32.bin");
-const ATANH_TABLE: &'static [u32] = include_bytes_aligned_as!(u32, "atanh_u0f32.bin");
+const ATAN_TABLE: &'static [u32] = include_as!(u32, "atan_u0f32.bin");
+const ATANH_TABLE: &'static [u32] = include_as!(u32, "atanh_u0f32.bin");
 // const EXPM1_TABLE: &'static [u32] = include_bytes_aligned_as!(u32, "expm1_u0f32.bin");
 
 const INV_GAIN: U0F32 = U0F32::from_bits(0x9B74EDA8); // 0.607252935009

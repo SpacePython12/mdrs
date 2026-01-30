@@ -11,13 +11,8 @@ SECTIONS
 
     .text :
     {
-        KEEP(*(.text.ivt))
-        KEEP(*(.text.hdr))
-        KEEP(*(.text.boot))
-        KEEP(*(.text._init))
-        KEEP(*(.text._extint))
-        KEEP(*(.text._hblank))
-        KEEP(*(.text._vblank))
+        KEEP(*(.boot.vtable));
+        KEEP(*(.boot.header))
         *(.text .text.* .note.*);
     } > ROM
 

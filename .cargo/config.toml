@@ -9,4 +9,3 @@ rustflags = ["-Clink-args=-Tmegadrive.ld", "-Clink-args=-nostdlib"]
 [unstable]
 unstable-options = true
 build-std = ["core", "alloc", "compiler_builtins"]
-no-jump-tables = true

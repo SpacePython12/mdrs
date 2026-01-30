@@ -22,8 +22,11 @@ opt-level = 3
 
 [dependencies]
 bitflags = "2.10.0"
+bytemuck = { version = "1.24.0", features = ["derive"] }
 const-default = { version = "1.0.0", default-features = false, features = ["derive"] }
 critical-section = { version = "1.2.0", features = ["restore-state-u16"] }
 fixed = "1.29.0"
 heapless = "0.9.1"
+lzss = { version = "0.9.1", default-features = false }
+void = { version = "1.0.2", default-features = false }
 

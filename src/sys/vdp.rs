@@ -1,10 +1,4 @@
-use core::num::NonZero;
-use core::ptr;
-use core::mem;
-use core::cell;
-use core::sync::atomic;
-
-use critical_section as cs;
+use super::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VRAMAddress(u16);
@@ -21,6 +15,11 @@ impl VRAMAddress {
     }
 
     #[inline]
+    pub const fn from_tile_index(index: u16) -> Self {
+        Self((index & 0x7FF) << 4)
+    }
+
+    #[inline]
     pub const fn byte_addr(self) -> u32 {
         (self.0 << 1) as u32
     }
@@ -31,78 +30,47 @@ impl VRAMAddress {
     }
 
     #[inline]
-    pub const fn from_tile_index(index: u16) -> Self {
-        Self((index & 0x7FF) << 4)
+    pub const fn tile_index(self) -> u16 {
+        self.0 >> 4
     }
+
 }
 
-// impl const From<u16> for VRAMAddress {
-//     fn from(value: u16) -> Self {
-//         Self(value)
-//     }
-// }
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CRAMAddress(u8);
 
-// impl const core::ops::Not for VRAMAddress {
-//     type Output = Self;
+impl CRAMAddress {
+    #[inline]
+    pub const fn from_byte_addr(addr: u8) -> Self {
+        Self(addr >> 1)
+    }
 
-//     #[inline]
-//     fn not(self) -> Self::Output {
-//         Self(!self.0)
-//     }
-// }
+    #[inline]
+    pub const fn from_word_addr(addr: u8) -> Self {
+        Self(addr)
+    }
 
-// impl const core::ops::BitAnd<u16> for VRAMAddress {
-//     type Output = Self;
+    #[inline]
+    pub const fn byte_addr(self) -> u8 {
+        self.0 << 1
+    }
 
-//     #[inline]
-//     fn bitand(self, rhs: u16) -> Self::Output {
-//         Self(self.0 & (rhs >> 1))
-//     }
-// }
+    #[inline]
+    pub const fn word_addr(self) -> u8 {
+        self.0
+    }
 
-// impl const core::ops::BitAndAssign<u16> for VRAMAddress {
-//     #[inline]
-//     fn bitand_assign(&mut self, rhs: u16) {
-//         self.0 &= rhs
-//     }
-// }
-
-// impl const core::ops::BitOr<u16> for VRAMAddress {
-//     type Output = Self;
-
-//     #[inline]
-//     fn bitor(self, rhs: u16) -> Self::Output {
-//         Self(self.0 | rhs)
-//     }
-// }
-
-// impl const core::ops::BitOrAssign<u16> for VRAMAddress {
-//     #[inline]
-//     fn bitor_assign(&mut self, rhs: u16) {
-//         self.0 |= rhs
-//     }
-// }
-
-// impl const core::ops::BitXor<u16> for VRAMAddress {
-//     type Output = Self;
-
-//     #[inline]
-//     fn bitxor(self, rhs: u16) -> Self::Output {
-//         Self(self.0 ^ rhs)
-//     }
-// }
-
-// impl const core::ops::BitXorAssign<u16> for VRAMAddress {
-//     #[inline]
-//     fn bitxor_assign(&mut self, rhs: u16) {
-//         self.0 ^= rhs
-//     }
-// }
+    #[inline]
+    pub const fn from_line_index(line: u8, index: u8) -> Self {
+        Self::from_word_addr(((line & 0x3) << 4) | (index & 0xF))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Address {
     VRAM(VRAMAddress),
-    CRAM(u8),
+    CRAM(CRAMAddress),
     VSRAM(u8),
 }
 
@@ -111,8 +79,8 @@ impl Address {
     pub const fn byte_addr(self) -> u32 {
         match self {
             Address::VRAM(addr) => addr.byte_addr(),
-            Address::CRAM(addr) => addr as u32,
-            Address::VSRAM(addr) => addr as u32,
+            Address::CRAM(addr) => addr.byte_addr() as u32,
+            Address::VSRAM(addr) => (addr << 1) as u32,
         }
     }
 
@@ -120,22 +88,10 @@ impl Address {
     pub const fn word_addr(self) -> u16 {
         match self {
             Address::VRAM(addr) => addr.word_addr(),
-            Address::CRAM(addr) => (addr >> 1) as u16,
-            Address::VSRAM(addr) => (addr >> 1) as u16,
+            Address::CRAM(addr) => addr.word_addr() as u16,
+            Address::VSRAM(addr) => addr as u16,
         }
     }
-
-    #[inline]
-    pub fn cram_line(line: u8) -> Self {
-        Self::CRAM((line & 0x3) << 4)
-    }
-
-    // pub fn vram_plane_a_loc(x: u8, y: u8) -> Self {
-    //     let settings = Settings::current();
-    //     let width = settings.plane_width;
-    //     let height = settings.plane_height;
-    //     let addr = settings.plane_a_base.0 + ()
-    // }
 }
 
 /// A struct representing where the window is drawn instead of plane A for an axis.
@@ -154,7 +110,15 @@ impl Default for WindowClip {
 }
 
 impl WindowClip {
-    fn raw_value(self) -> u8 {
+    pub fn from_raw_value(value: u8) -> Self {
+        match value & 0x80 {
+            0x00 => WindowClip::Before(value & 0x1F),
+            0x80 => WindowClip::After(value & 0x1F),
+            _ => unreachable!()
+        }
+    }
+
+    pub fn raw_value(self) -> u8 {
         match self {
             WindowClip::Before(v) => v & 0x1f,
             WindowClip::After(v) => 0x80 | (v & 0x1f),
@@ -199,10 +163,10 @@ pub enum PlaneSize {
     #[default]
     Size32x32 = 0b00_00_00_00,
     Size64x32 = 0b00_00_00_01,
-    Size128x32 = 0b00_00_00_10,
+    Size128x32 = 0b00_00_00_11,
     Size32x64 = 0b00_01_00_00,
-    Size64x64 = 0b00_01_00_10,
-    Size32x128 = 0b00_10_00_00,
+    Size64x64 = 0b00_01_00_01,
+    Size32x128 = 0b00_11_00_00,
 }
 
 impl PlaneSize {
@@ -393,15 +357,20 @@ impl From<u16> for TileFlags {
     }
 }
 
+unsafe impl bytemuck::TransparentWrapper<u16> for TileFlags {}
+unsafe impl bytemuck::NoUninit for TileFlags {}
+unsafe impl bytemuck::AnyBitPattern for TileFlags {}
+unsafe impl bytemuck::Zeroable for TileFlags {}
+
 /// A typedef for tile contents.
 pub type Tile = [u32; 8];
 
-#[macro_export]
-macro_rules! include_tiles {
-    ($path:literal) => {
-        include_bytes_aligned_as!($crate::sys::vdp::Tile, $path)
-    };
-}
+// #[macro_export]
+// macro_rules! include_tiles {
+//     ($path:literal) => {
+//         include_bytes_aligned_as!($crate::sys::vdp::Tile, $path)
+//     };
+// }
 
 /// An enumeration of valid sprite sizes in tiles.
 #[repr(u8)]
@@ -486,6 +455,10 @@ pub struct Sprite {
     pub x: u16,
 }
 
+unsafe impl bytemuck::NoUninit for Sprite {}
+unsafe impl bytemuck::AnyBitPattern for Sprite {}
+unsafe impl bytemuck::Zeroable for Sprite {}
+
 impl Sprite {
     pub const ZEROED: Self = Self {
         y: 0,
@@ -524,518 +497,135 @@ impl core::ops::Deref for Sprite {
     }
 }
 
-impl core::ops::DerefMut for Sprite {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.flags
+bitflags::bitflags! {
+    #[derive(Clone, Copy)]
+    pub struct Status: u16 {
+        /// If set, this is a PAL system. If clear, this is an NTSC system.
+        const IS_PAL = 1 << 0;
+        /// If set, DMA is currently in progress.
+        const DMA_ACTIVE = 1 << 1;
+        /// If set, horizontal blank is currently in progress.
+        const HBLANK_ACTIVE = 1 << 2;
+        /// If set, vertical blank is currently in progress.
+        const VBLANK_ACTIVE = 1 << 3;
+        /// If set, odd frame displayed in interlaced mode. If clear, even frame displayed in interlaced mode. 
+        const ODD_FRAME = 1 << 4;
+        /// If set, any two sprites on the current scanline have non-transparent pixels overlapping.
+        /// 
+        /// This is a holdover from the Master System's TMS9918 chip, and should be ignored.
+        const SPRITE_OVERLAP = 1 << 5;
+        /// If set, the sprite limit has been hit on the current scanline (>16 in H32 mode, >20 in H40 mode).
+        const SPRITE_LIMIT = 1 << 6;
+        /// If set, vertical interrupt is occuring.
+        const VINT_OCCURRED = 1 << 7;
+        /// If set, the VDP's FIFO buffer is completely full. 
+        /// 
+        /// Any subsequent writes to the control port will freeze the 68k until the VDP can process the next command.
+        const FIFO_FULL = 1 << 8;
+        /// If set, the VDP's FIFO buffer is completely empty. 
+        const FIFO_EMPTY = 1 << 9;
+
     }
 }
 
-pub trait VRAMData: Send + Sync + 'static {
-    fn as_words(&self) -> &[u16];
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        let (pairs, single) = self.as_words().as_chunks::<2>();
-        (
-            unsafe { core::slice::from_raw_parts(pairs.as_ptr() as *const u32, pairs.len()) },
-            single.first()
-        )
+bitflags::bitflags! {
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Mode: u32 {
+        /// If set, the video signal breaks somehow.
+        const DISABLE_DISPLAY = 1 << 0;
+        /// If set, the H/V counter is latched on external interrupts.
+        const STOP_HV_ON_XINT = 1 << 1;
+        /// If set, all 3 color bits are used. If clear, only the least significant bit is used.
+        const FULL_COLOR_MODE = 1 << 2;
+        /// If set, horizontal interrupts are enabled.
+        const ENABLE_HINT = 1 << 4;
+        /// If set, the leftmost 8 pixels are blanked.
+        const BLANK_LEFT_COLUMN = 1 << 5;
+        /// If set, mode 5 (normal MD operation) is enabled. If clear, mode 4 is enabled.
+        const ENABLE_MODE5 = 1 << 10;
+        /// If set, V30 mode is active.
+        const V30_MODE = 1 << 11;
+        /// If set, DMA transfers are enabled.
+        const ENABLE_DMA = 1 << 12;
+        /// If set, vertical interrupts are enabled.
+        const ENABLE_VINT = 1 << 13;
+        /// If set, display is enabled. If clear, display is filled with background color.
+        const ENABLE_DISPLAY = 1 << 14;
+        /// If set, extended VRAM mode is enabled. 
+        /// 
+        /// This breaks VDP operation on consoles with only 64 kb of VRAM, because the extra memory is addressed with the lowest address line.
+        const EXTENDED_VRAM = 1 << 15;
+        /// If set, all 8 hscroll values in a group are used. If clear, every 8th scroll value is used for each row of tiles.
+        const LINE_SCROLL = 1 << 16;
+        /// If set, each row has its own set of 8 hscroll values. If clear, they share the first 8 hscroll values.
+        const ROW_SCROLL = 1 << 17;
+        /// If set, each column (2 tiles) has its own vscroll value. If clear, they all share the first vscroll value.
+        const COLUMN_SCROLL = 1 << 18;
+        /// If set, external interrupts are enabled.
+        const ENABLE_XINT = 1 << 19;
+        /// If set, H40 mode is active.
+        const H40_MODE = (1 << 24) | (1 << 31);
+        /// If set, interlace mode is active.
+        /// 
+        /// The type of interlace mode is determined by the double interlace flag.
+        const ENABLE_INTERLACE = 1 << 25;
+        /// If set, double interlace mode is active. If clear, normal interlace mode is active.
+        /// 
+        /// This has no effect if interlace mode is disabled.
+        const DOUBLE_INTERLACE = 1 << 26;
+        /// If set, shadow/highlight mode is active.
+        const SHADOW_HIGHLIGHT = 1 << 27;
     }
-}
-
-impl<T: Send + Sync + 'static, const N: usize> VRAMData for [T; N] where [T]: VRAMData {
-    fn as_words(&self) -> &[u16] {
-        VRAMData::as_words(self.as_slice())
-    }
-
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        VRAMData::as_word_pairs(self.as_slice())
-    }
-}
-
-impl VRAMData for u16 {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        core::slice::from_ref(self)
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
-            Some(self)
-        )
-    }
-}
-
-impl VRAMData for [u16] {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        self
-    }
-}
-
-impl VRAMData for i16 {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u16>(), 1) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
-            Some(unsafe { &*(&raw const *self).cast::<u16>() })
-        )
-    }
-}
-
-impl VRAMData for [i16] {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u16>(), self.len()) }
-    }
-}
-
-impl VRAMData for TileFlags {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u16>(), 1) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (
-            unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 0) },
-            Some(unsafe { &*(&raw const *self).cast::<u16>() })
-        )
-    }
-}
-
-impl VRAMData for [TileFlags] {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u16>(), self.len()) }
-    }
-}
-
-impl VRAMData for Tile {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u16>(), 16) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 8) }, None)
-    }
-}
-
-impl VRAMData for [Tile] {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u16>(), self.len() << 4) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u32>(), self.len() << 3) }, None)
-    }
-}
-
-impl VRAMData for Sprite {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u16>(), 4) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts((&raw const *self).cast::<u32>(), 2) }, None)
-    }
-}
-
-impl VRAMData for [Sprite] {
-    #[inline]
-    fn as_words(&self) -> &[u16] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u16>(), self.len() << 2) }
-    }
-
-    #[inline]
-    fn as_word_pairs(&self) -> (&[u32], Option<&u16>) {
-        (unsafe { core::slice::from_raw_parts(self.as_ptr().cast::<u32>(), self.len() << 1) }, None)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Status(u16);
-
-impl Status {
-    #[inline]
-    pub fn is_pal(&self) -> bool {
-        self.0 & 0x1 != 0
-    }
-
-    #[inline]
-    pub fn dma_in_progress(&self) -> bool {
-        self.0 & 0x2 != 0
-    }
-
-    #[inline]
-    pub fn in_hblank(&self) -> bool {
-        self.0 & 0x4 != 0
-    }
-
-    #[inline]
-    pub fn in_vblank(&self) -> bool {
-        self.0 & 0x8 != 0
-    }
-
-    #[inline]
-    pub fn odd_interlace_frame(&self) -> bool {
-        self.0 & 0x10 != 0
-    }
-
-    #[inline]
-    pub fn sprite_collision(&self) -> bool {
-        self.0 & 0x20 != 0
-    }
-
-    #[inline]
-    pub fn sprite_limit_hit(&self) -> bool {
-        self.0 & 0x40 != 0
-    }
-
-    #[inline]
-    pub fn vint_occurred(&self) -> bool {
-        self.0 & 0x80 != 0
-    }
-
-    #[inline]
-    pub fn fifo_full(&self) -> bool {
-        self.0 & 0x100 != 0
-    }
-
-    #[inline]
-    pub fn fifo_empty(&self) -> bool {
-        self.0 & 0x200 != 0
-    }
-}
-
-macro_rules! flag_u32 {
-    ($flag:expr,$value:expr) => {
-        if $value { $flag } else { 0 }
-    };
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Settings {
-    mode: u32,
-    sprites_base: u8,
-    plane_a_base: u8,
-    plane_b_base: u8,
-    window_base: u8,
-    hscroll_base: u8,
-    plane_size: PlaneSize,
-    window_x_clip: WindowClip,
-    window_y_clip: WindowClip,
-    background_color: u8,
-    hint_interval: u8,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct HVCounter {
+    pub v: u8,
+    pub h: u8,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Register {
+    ModeSet0 = 0x00,
+    ModeSet1 = 0x01,
+    PlaneAAddr = 0x02,
+    WindowAddr = 0x03,
+    PlaneBAddr = 0x04,
+    SpriteAddr = 0x05,
+    SpriteBase = 0x06,
+    BackgroundColor = 0x07,
+    HIntCounter = 0x0A,
+    ModeSet2 = 0x0B,
+    ModeSet3 = 0x0C,
+    HScrollAddr = 0x0D,
+    PlaneBase = 0x0E,
+    AutoInc = 0x0F,
+    PlaneSize = 0x10,
+    WindowHClip = 0x11,
+    WindowVClip = 0x12,
+    DMALenL = 0x13,
+    DMALenH = 0x14,
+    DMAAddrL = 0x15,
+    DMAAddrM = 0x16,
+    DMAAddrH = 0x17,
 }
-
-impl Settings {
-    pub const DEFAULT: Self = Self {
-        mode: 0x81007404,
-        plane_a_base: 0x30,
-        plane_b_base: 0x07,
-        window_base: 0x34,
-        sprites_base: 0x78,
-        hscroll_base: 0x3D,
-        window_x_clip: WindowClip::Before(0),
-        window_y_clip: WindowClip::Before(0),
-        plane_size: PlaneSize::Size64x32,
-        background_color: 0u8,
-        hint_interval: 0xFF,
-    };
-
-    #[inline]
-    pub(super) fn clear() {
-        Self::DEFAULT.apply::<true>();
-    }
-
-
-    #[inline]
-    pub fn current() -> Self {
-        super::with_cs::<1, 7, _>(|cs| {
-            GLOBAL_SETTINGS.borrow(cs).get()
-        })
-    }
-
-    #[inline(never)]
-    pub fn apply<const FORCE: bool>(self) {
-        super::with_cs::<1, 7, _>(|cs| {
-            let orig = GLOBAL_SETTINGS.borrow(cs).get();
-        
-            if FORCE || self.mode != orig.mode {
-                const MODE_MASK: u32 = 0xFF_0F_FC_37; // The bits that actually do stuff.
-    
-                let mask = (self.mode ^ orig.mode) & MODE_MASK;
-    
-                if FORCE || mask & 0xFF != 0 {
-                    VDP::set_register(0, self.mode as u8);
-                }
-        
-                if FORCE || mask & 0xFF00 != 0 {
-                    VDP::set_register(1, (self.mode >> 8) as u8);
-                }
-        
-                if FORCE || mask & 0xFF0000 != 0 {
-                    VDP::set_register(11, (self.mode >> 16) as u8);
-                }
-        
-                if FORCE || mask & 0xFF000000 != 0 {
-                    VDP::set_register(12, (self.mode >> 24) as u8);
-                }
-            }
-    
-            if FORCE || self.plane_a_base != orig.plane_a_base {
-                VDP::set_register(2, self.plane_a_base);
-            }
-    
-            if FORCE || self.plane_b_base != orig.plane_b_base {
-                VDP::set_register(4, self.plane_b_base);
-            }
-    
-            if FORCE || self.sprites_base != orig.sprites_base {
-                VDP::set_register(5, self.sprites_base);
-            }
-    
-            if FORCE || self.window_base != orig.window_base {
-                VDP::set_register(3, self.window_base);
-            }
-    
-            if FORCE || self.hscroll_base != orig.hscroll_base {
-                VDP::set_register(13, self.hscroll_base);
-            }
-    
-            if FORCE || self.plane_size != orig.plane_size {
-                VDP::set_register(16, self.plane_size as u8);
-            }
-    
-            if FORCE || self.window_x_clip != orig.window_x_clip {
-                VDP::set_register(17, self.window_x_clip.raw_value());
-            }
-    
-            if FORCE || self.window_y_clip != orig.window_y_clip {
-                VDP::set_register(18, self.window_y_clip.raw_value());
-            }
-    
-            if FORCE || self.background_color != orig.background_color {
-                VDP::set_register(7, self.background_color);
-            }
-    
-            if FORCE || self.hint_interval != orig.hint_interval {
-                VDP::set_register(10, self.hint_interval);
-            }
-    
-            GLOBAL_SETTINGS.borrow(cs).set(self);
-        })
-    }
-
-    #[inline]
-    pub fn modify_mode(&mut self, mode: u32, mask: u32) {
-        self.mode = (self.mode & !mask) | (mode & mask)
-    }
-
-    #[inline]
-    pub fn set_scroll_mode(&mut self, hscroll: HScrollMode, vscroll: VScrollMode) {
-        self.modify_mode(((hscroll as u32) << 16) | ((vscroll as u32) << 18), 0x70000);
-    }
-
-    #[inline]
-    pub fn set_interlace_mode(&mut self, mode: InterlaceMode) {
-        self.modify_mode((mode as u32) << 25, 0x6000000);
-    }
-
-    #[inline] 
-    pub fn set_background_color(&mut self, line: u8, index: u8) {
-        self.background_color = ((line & 0x3) << 4) | (index & 0xF);
-    }
-
-    #[inline]
-    pub fn enable_display(&mut self, enable: bool) {
-        self.modify_mode(flag_u32!(0x4000, enable), 0x4000);
-    }
-
-    // #[inline]
-    // pub fn enable_mode5(&mut self, enable: bool) {
-    //     self.modify_mode(flag_u32!(0x400, enable), 0x400);
-    // }
-
-    #[inline]
-    pub fn enable_interrupts(&mut self, vint: bool, hint: bool, xint: bool) {
-        self.modify_mode(
-            flag_u32!(0x2000, vint) | flag_u32!(0x10, hint) | flag_u32!(0x80000, xint), 
-            0x82010
-        );
-    }
-
-    #[inline]
-    pub fn stop_hv_on_xint(&mut self, stop: bool) {
-        self.modify_mode(flag_u32!(0x2, stop), 0x2);
-    }
-
-    #[inline]
-    pub fn enable_dma(&mut self, enable: bool) {
-        self.modify_mode(flag_u32!(0x1000, enable), 0x1000);
-    }
-
-    #[inline]
-    pub fn enable_h40(&mut self, enable: bool) {
-        self.modify_mode(flag_u32!(0x81000000, enable), 0x81000000);
-    }
-
-    #[inline]
-    pub fn enable_v30(&mut self, enable: bool) {
-        self.modify_mode(flag_u32!(0x800, enable), 0x800);
-    }
-
-    #[inline]
-    pub fn enable_shadow_highlight(&mut self, enable: bool) {
-        self.modify_mode(flag_u32!(0x8000000, enable), 0x8000000);
-    }
-
-    #[inline]
-    pub fn set_hint_interval(&mut self, interval: u8) {
-        self.hint_interval = interval;
-    }
-
-    #[inline]
-    pub fn set_plane_a_base(&mut self, addr: VRAMAddress) {
-        self.plane_a_base = ((addr.word_addr() >> 9) as u8) & 0x78;
-    }
-
-    #[inline]
-    pub fn plane_a_base(&self) -> VRAMAddress {
-        VRAMAddress::from_word_addr((self.plane_a_base as u16) << 9)
-    }
-
-    #[inline]
-    pub fn set_plane_b_base(&mut self, addr: VRAMAddress) {
-        self.plane_b_base = ((addr.word_addr() >> 12) as u8) & 0xF;
-    }
-
-    #[inline]
-    pub fn plane_b_base(&self) -> VRAMAddress {
-        VRAMAddress::from_word_addr((self.plane_b_base as u16) << 12)
-    } 
-
-    #[inline]
-    pub fn set_sprites_base(&mut self, addr: VRAMAddress) {
-        self.sprites_base = ((addr.word_addr() >> 8) as u8) & 0xFF;
-    }
-
-    #[inline]
-    pub fn sprites_base(&self) -> VRAMAddress {
-        VRAMAddress::from_word_addr((self.sprites_base as u16) << 8)
-    }
-
-    #[inline]
-    pub fn set_window_base(&mut self, addr: VRAMAddress) {
-        self.window_base = ((addr.word_addr() >> 9) as u8) & 0x7E;
-    }
-
-    #[inline]
-    pub fn window_base(&self) -> VRAMAddress {
-        VRAMAddress::from_word_addr((self.window_base as u16) << 9)
-    }
-
-    #[inline]
-    pub fn set_hscroll_base(&mut self, addr: VRAMAddress) {
-        self.hscroll_base = ((addr.word_addr() >> 9) as u8) & 0x7F;
-    }
-
-    #[inline]
-    pub fn hscroll_base(&self) -> VRAMAddress {
-        VRAMAddress::from_word_addr((self.hscroll_base as u16) << 9)
-    }
-
-    #[inline]
-    pub fn set_plane_size(&mut self, size: PlaneSize) {
-        self.plane_size = size;
-    }
-
-    #[inline]
-    pub fn plane_size(&self) -> PlaneSize {
-        self.plane_size
-    }
-
-    #[inline]
-    pub fn set_window_clip(&mut self, x_clip: WindowClip, y_clip: WindowClip) {
-        self.window_x_clip = x_clip;
-        self.window_y_clip = y_clip;
-    }
-
-    #[inline] 
-    pub fn window_x_clip(&self) -> WindowClip {
-        self.window_x_clip
-    }
-
-    #[inline] 
-    pub fn window_y_clip(&self) -> WindowClip {
-        self.window_y_clip
-    }
-
-    #[inline]
-    pub fn plane_a_tile(&self, x: u8, y: u8) -> VRAMAddress {
-        self.plane_size.tile_offset_from(self.plane_a_base(), x, y)
-    }
-
-    #[inline]
-    pub fn plane_b_tile(&self, x: u8, y: u8) -> VRAMAddress {
-        self.plane_size.tile_offset_from(self.plane_b_base(), x, y)
-    }
-
-    #[inline]
-    pub fn window_tile(&self, x: u8, y: u8) -> VRAMAddress {
-        self.plane_size.tile_offset_from(self.window_base(), x, y)
-    }
-}
-
-static GLOBAL_SETTINGS: cs::Mutex<cell::Cell<Settings>> = cs::Mutex::new(cell::Cell::new(Settings::DEFAULT));
-
-const VDP_DATA_PORT: *mut () = 0xC00000 as _;
-const VDP_CTRL_PORT: *mut () = 0xC00004 as _;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct WordCmd(pub u16);
 
 impl WordCmd {
-    const NULL: Self = Self(0);
-
     #[inline]
-    pub const fn set_reg(reg: u8, val: u8) -> Self {
-        Self(0x8000 | (((reg & 0x1F) as u16) << 8) | (val as u16))
+    pub const fn set_reg(reg: Register, val: u8) -> Self {
+        Self(0x8000 | ((((reg as u8) & 0x1F) as u16) << 8) | (val as u16))
     }
+}
 
-    #[inline]
-    pub fn execute(self) {
-        unsafe {
-            // core::arch::asm!(
-            //     "move.w {cmd},({port})",
-            //     cmd = in(reg_data) self.0,
-            //     port = in(reg_addr) VDP_CTRL_PORT,
-            // );
-            ptr::write_volatile(VDP_CTRL_PORT as *mut u16, self.0);
-        }
+impl core::fmt::Debug for WordCmd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "[{:04X}]", self.0)
     }
 }
 
@@ -1044,9 +634,8 @@ impl WordCmd {
 pub struct LongCmd(pub u32);
 
 impl LongCmd {
-
     #[inline]
-    pub const fn set_addr_w(addr: Address, dma: bool, copy: bool) -> Self {
+    pub const fn write_addr(addr: Address, dma: bool, copy: bool) -> Self {
         let mut ctrl = match addr {
             Address::VRAM(_) => 0x40000000,
             Address::CRAM(_) => 0xC0000000,
@@ -1063,7 +652,7 @@ impl LongCmd {
     }
 
     #[inline]
-    pub const fn set_addr_r(addr: Address, dma: bool, copy: bool) -> Self {
+    pub const fn read_addr(addr: Address, dma: bool, copy: bool) -> Self {
         let mut ctrl = match addr {
             Address::VRAM(_) => 0x00000000,
             Address::CRAM(_) => 0x00000020,
@@ -1080,523 +669,1020 @@ impl LongCmd {
     }
 
     #[inline]
-    pub const fn from_words(first: WordCmd, second: WordCmd) -> Self {
-        Self(((first.0 as u32) << 16) | (second.0 as u32))
+    pub const fn merge(cmds: [WordCmd; 2]) -> Self {
+        unsafe { mem::transmute(cmds) }
     }
 
     #[inline]
-    pub fn execute(self) {
-        unsafe {
-            // core::arch::asm!(
-            //     "move.l {cmd},({port})",
-            //     cmd = in(reg_data) self.0,
-            //     port = in(reg_addr) VDP_CTRL_PORT,
-            // );
-            ptr::write_volatile(VDP_CTRL_PORT as *mut u32, self.0);
-        }
-    }
-
-    #[inline]
-    pub fn execute_dma(self) {
-        unsafe {
-            // core::arch::asm!(
-            //     "move.l {cmd},{scratch}",
-            //     "move.l {scratch},({port})",
-            //     cmd = in(reg_data) self.0,
-            //     port = in(reg_addr) VDP_CTRL_PORT,
-            //     scratch = sym SCRATCH,
-            // );
-            ptr::write_volatile(&raw mut LONG_CMD_SCRATCH, mem::MaybeUninit::new(self.0));
-            ptr::write_volatile(VDP_CTRL_PORT as *mut u32, ptr::read_volatile(&raw const LONG_CMD_SCRATCH).assume_init());
-        }
+    pub const fn split(self) -> [WordCmd; 2] {
+        unsafe { mem::transmute(self) }
     }
 }
 
-static mut LONG_CMD_SCRATCH: mem::MaybeUninit<u32> = const { mem::MaybeUninit::uninit() };
-
-#[derive(Clone)]
-pub struct Writer(Address, Option<u8>);
-
-impl Writer {
-    #[inline]
-    pub const fn new(addr: Address) -> Self {
-        Self(addr, None)
-    }
-
-    #[inline]
-    pub fn with_autoinc(mut self, autoinc: impl Into<Option<u8>>) -> Self {
-        self.1 = autoinc.into();
-        self
-    }
-
-    #[inline]
-    fn begin(&self) {
-        if let Some(autoinc) = self.1 {
-            WordCmd::set_reg(0xF, autoinc).execute();
-        }
-
-        LongCmd::set_addr_w(self.0, false, false).execute();
-    }
-
-    #[inline]
-    pub fn write<T: VRAMData + ?Sized>(self, data: impl AsRef<T>) {
-        self.begin();
-        unsafe {
-            let (pairs, extra) = data.as_ref().as_word_pairs();
-            for &pair in pairs {
-                ptr::write_volatile(VDP_DATA_PORT as *mut u32, pair);
-            }
-            if let Some(&extra) = extra {
-                ptr::write_volatile(VDP_DATA_PORT as *mut u16, extra);
-            }
-        }
-    }
-
-    #[inline]
-    pub fn write_iter<T: VRAMData + ?Sized>(self, iter: impl IntoIterator<Item = impl AsRef<T>>) {
-        self.begin();
-        let mut iter = iter.into_iter();
-        unsafe {
-            let mut last_extra: Option<u16> = None;
-
-            while let Some(data) = iter.next() {
-                let (pairs, extra) = data.as_ref().as_word_pairs();
-                if !pairs.is_empty() {
-                    if let Some(last_extra) = last_extra.take() {
-                        ptr::write_volatile(VDP_DATA_PORT as *mut u16, last_extra);
-                    }
-                }
-                for &pair in pairs {
-                    ptr::write_volatile(VDP_DATA_PORT as *mut u32, pair);
-                }
-                if let Some(&extra) = extra {
-                    if let Some(last_extra) = last_extra.take() {
-                        ptr::write_volatile(VDP_DATA_PORT as *mut u32, mem::transmute([last_extra, extra]));
-                    } else {
-                        last_extra.replace(extra);
-                    }
-                }
-            }
-        }
+impl core::fmt::Debug for LongCmd {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let split = self.split();
+        write!(f, "[{:04X}|{:04X}]", split[0].0, split[1].0)
     }
 }
+
+#[repr(align(4))]
+union DataPort {
+    single: u16,
+    pair: [u16; 2]
+}
+
+#[repr(align(4))]
+union CtrlPort {
+    status: Status,
+    reg_cmd: WordCmd,
+    reg_cmds: [WordCmd; 2],
+    addr_cmd: LongCmd,
+}
+
+#[repr(C)]
+pub(super) struct VDPPort {
+    data: DataPort,
+    ctrl: CtrlPort,
+    hvctr: HVCounter,
+}
+
+impl VDPPort {
+    const BASE_ADDR: usize = 0xC00000;
+
+    pub unsafe fn steal_mut() -> &'static mut Self {
+        &mut *core::hint::black_box(Self::BASE_ADDR as *mut Self)
+    }
+
+    pub unsafe fn steal() -> &'static Self {
+        &*core::hint::black_box(Self::BASE_ADDR as *const Self)
+    }
+
+    pub unsafe fn steal_mut_ptr() ->  *mut Self {
+        core::hint::black_box(Self::BASE_ADDR as *mut Self)
+    }
+
+    pub unsafe fn steal_ptr() -> *const Self {
+        core::hint::black_box(Self::BASE_ADDR as *const Self)
+    }
+
+    pub fn status(&self) -> Status {
+        unsafe { (&raw const self.ctrl.status).read_volatile() }
+    }
+
+    pub fn hv_counter(&self) -> HVCounter {
+        unsafe { (&raw const self.hvctr).read_volatile() }
+    }
+
+    pub unsafe fn execute_word(&mut self, cmd: WordCmd) {
+        (&raw mut self.ctrl.reg_cmd).write_volatile(cmd);
+    }
+
+    pub unsafe fn execute_word_pair(&mut self, cmds: [WordCmd; 2]) {
+        (&raw mut self.ctrl.reg_cmds).write_volatile(cmds);
+    }
+
+    pub unsafe fn execute_long(&mut self, cmd: LongCmd) {
+        (&raw mut self.ctrl.addr_cmd).write_volatile(cmd);
+    }
+
+    pub unsafe fn execute_long_dma(&mut self, cmd: LongCmd) {
+        let scratch = mem::MaybeUninit::new(cmd);
+        (&raw mut self.ctrl.addr_cmd).write_volatile(scratch.as_ptr().read_volatile());
+    }
+
+    pub unsafe fn write_word(&mut self, word: u16) {
+        (&raw mut self.data.single).write_volatile(word);
+    }
+
+    pub unsafe fn write_word_pair(&mut self, pair: [u16; 2]) {
+        (&raw mut self.data.pair).write_volatile(pair);
+    }
+
+    pub unsafe fn read_word(&mut self) -> u16 {
+        (&raw mut self.data.single).read_volatile()
+    }
+
+    pub unsafe fn read_word_pair(&mut self) -> [u16; 2] {
+        (&raw mut self.data.pair).read_volatile()
+    }
+}
+
+pub struct VDPSettings {
+    pub mode: Mode,
+    pub plane_a_addr: VRAMAddress,
+    pub plane_b_addr: VRAMAddress,
+    pub window_addr: VRAMAddress,
+    pub sprites_addr: VRAMAddress,
+    pub hscroll_addr: VRAMAddress,
+    pub plane_size: PlaneSize,
+    pub window_h_clip: WindowClip,
+    pub window_v_clip: WindowClip,
+    pub background_color: CRAMAddress,
+    pub hint_interval: u8, 
+}
+
+#[derive(Default)]
+struct VDPState {
+    mode: [atomic::AtomicU8; 4],
+    plane_a_addr: atomic::AtomicU8,
+    plane_b_addr: atomic::AtomicU8,
+    window_addr:  atomic::AtomicU8,
+    sprites_addr: atomic::AtomicU8,
+    hscroll_addr: atomic::AtomicU8,
+    plane_size: atomic::AtomicU8,
+    window_h_clip: atomic::AtomicU8,
+    window_v_clip: atomic::AtomicU8,
+    background_color: atomic::AtomicU8,
+    hint_interval: atomic::AtomicU8, 
+}
+
+impl VDPState {
+    #[inline]
+    pub fn from_settings(settings: VDPSettings) -> Self {
+        let this = Self::default();
+        this.replace_mode(settings.mode);
+        this.set_plane_a_addr(settings.plane_a_addr);
+        this.set_plane_b_addr(settings.plane_b_addr);
+        this.set_sprites_addr(settings.sprites_addr);
+        this.set_window_addr(settings.window_addr);
+        this.set_hscroll_addr(settings.hscroll_addr);
+        this.set_plane_size(settings.plane_size);
+        this.set_window_h_clip(settings.window_h_clip);
+        this.set_window_v_clip(settings.window_v_clip);
+        this.set_background_color(settings.background_color);
+        this.set_hint_interval(settings.hint_interval);
+
+        this
+    }
+
+    #[inline]
+    pub fn into_settings(self) -> VDPSettings {
+        VDPSettings {
+            mode: self.mode(),
+            sprites_addr: self.sprites_addr(),
+            plane_a_addr: self.plane_a_addr(),
+            plane_b_addr: self.plane_b_addr(),
+            window_addr: self.window_addr(),
+            hscroll_addr: self.hscroll_addr(),
+            plane_size: self.plane_size(),
+            window_h_clip: self.window_h_clip(),
+            window_v_clip: self.window_v_clip(),
+            background_color: self.background_color(),
+            hint_interval: self.hint_interval(),
+        }
+    }
+
+    #[inline]
+    pub fn mode(&self) -> Mode {
+        Mode::from_bits_retain(u32::from_be_bytes(self.mode.each_ref().map(|byte| byte.load(atomic::Ordering::Relaxed))))
+    }
+
+    #[inline]
+    pub fn mode_bytes(&self) -> [u8; 4] {
+        self.mode.each_ref().map(|byte| byte.load(atomic::Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn replace_mode(&self, mode: Mode) {
+        let bits = mode.bits().to_be_bytes();
+        bits.into_iter().zip(self.mode.iter()).for_each(|(val, dst): (u8, &atomic::AtomicU8)| {
+            dst.store(val, atomic::Ordering::Relaxed);
+        });
+    }
+
+    #[inline]
+    pub fn plane_a_addr(&self) -> VRAMAddress {
+        VRAMAddress::from_word_addr((self.plane_a_addr.load(atomic::Ordering::Relaxed) as u16) << 9)
+    }
+
+    #[inline]
+    pub fn set_plane_a_addr(&self, addr: VRAMAddress) {
+        self.plane_a_addr.store(((addr.word_addr() >> 9) as u8) & 0x78, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn plane_b_addr(&self) -> VRAMAddress {
+        VRAMAddress::from_word_addr((self.plane_b_addr.load(atomic::Ordering::Relaxed) as u16) << 12)
+    } 
+
+    #[inline]
+    pub fn set_plane_b_addr(&self, addr: VRAMAddress) {
+        self.plane_b_addr.store(((addr.word_addr() >> 12) as u8) & 0xF, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn sprites_addr(&self) -> VRAMAddress {
+        VRAMAddress::from_word_addr((self.sprites_addr.load(atomic::Ordering::Relaxed) as u16) << 8)
+    }
+
+    #[inline]
+    pub fn set_sprites_addr(&self, addr: VRAMAddress) {
+        self.sprites_addr.store(((addr.word_addr() >> 8) as u8) & 0xFF, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn window_addr(&self) -> VRAMAddress {
+        VRAMAddress::from_word_addr((self.window_addr.load(atomic::Ordering::Relaxed) as u16) << 9)
+    }
+
+    #[inline]
+    pub fn set_window_addr(&self, addr: VRAMAddress) {
+        self.window_addr.store(((addr.word_addr() >> 9) as u8) & 0x7E, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn hscroll_addr(&self) -> VRAMAddress {
+        VRAMAddress::from_word_addr((self.hscroll_addr.load(atomic::Ordering::Relaxed) as u16) << 9)
+    }
+
+    #[inline]
+    pub fn set_hscroll_addr(&self, addr: VRAMAddress) {
+        self.hscroll_addr.store(((addr.word_addr() >> 9) as u8) & 0x7F, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn plane_size(&self) -> PlaneSize {
+        unsafe { core::mem::transmute(self.plane_size.load(atomic::Ordering::Relaxed)) }
+    }
+
+    #[inline]
+    pub fn set_plane_size(&self, size: PlaneSize) {
+        self.plane_size.store(size as u8, atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn window_h_clip(&self) -> WindowClip {
+        WindowClip::from_raw_value(self.window_h_clip.load(atomic::Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn set_window_h_clip(&self, clip: WindowClip) {
+        self.window_h_clip.store(clip.raw_value(), atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn window_v_clip(&self) -> WindowClip {
+        WindowClip::from_raw_value(self.window_v_clip.load(atomic::Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn set_window_v_clip(&self, clip: WindowClip) {
+        self.window_v_clip.store(clip.raw_value(), atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn background_color(&self) -> CRAMAddress {
+        CRAMAddress::from_word_addr(self.background_color.load(atomic::Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub fn set_background_color(&self, color: CRAMAddress) {
+        self.background_color.store(color.word_addr(), atomic::Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn hint_interval(&self) -> u8 {
+        self.hint_interval.load(atomic::Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn set_hint_interval(&self, interval: u8) {
+        self.hint_interval.store(interval, atomic::Ordering::Relaxed);
+    }
+
+}
+
+static STATE: cs::Mutex<cell::OnceCell<cell::RefCell<VDPState>>> = cs::Mutex::new(cell::OnceCell::new());
+
+// cell::RefCell::new(VDPState { 
+//     mode: Mode::from_bits_retain(0x81007404),
+//     plane_a_addr: 0x30,
+//     plane_b_addr: 0x07,
+//     window_addr: 0x34,
+//     sprites_addr: 0x78,
+//     hscroll_addr: 0x3D,
+//     window_h_clip: WindowClip::Before(0),
+//     window_v_clip: WindowClip::Before(0),
+//     plane_size: PlaneSize::Size64x32,
+//     background_color: 0u8,
+//     hint_interval: 0xFF,
+// })
 
 pub struct VDP;
 
 impl VDP {
-
-    
-
     #[inline]
-    #[deprecated]
-    fn set_register(reg: u8, val: u8) {
-        WordCmd::set_reg(reg, val).execute();
-    }
-
-    #[inline]
-    #[deprecated]
-    fn set_register_double(rega: u8, vala: u8, regb: u8, valb: u8) {
-        LongCmd::from_words(WordCmd::set_reg(rega, vala), WordCmd::set_reg(regb, valb)).execute();
-    }
-
-    #[inline]
-    #[deprecated]
-    fn set_address_inner(addr: Address, dma: bool, copy: bool) {
-        let cmd = LongCmd::set_addr_w(addr, dma, copy);
-        if dma {
-            cmd.execute_dma();
-        } else {
-            cmd.execute();
-        }
-    }
-
-    #[inline]
-    pub fn wait_for_vblank(handler: Option<fn(cs::CriticalSection)>) {
-        unsafe {
-            Self::set_vint_handler(handler);
-            Self::vint_wait();
-        }
-    }
-
-    #[inline]
-    unsafe fn set_vint_handler(handler: Option<fn(cs::CriticalSection)>) {
-        // We use volatile reads to force the compiler to not optimize or reorder things.
-        ptr::write_volatile(VINT_HANDLER.as_mut_ptr(), handler);
-    }
-
-    #[inline(never)]
-    unsafe fn vint_wait() {
-        VINT_FLAG.store(true, atomic::Ordering::Relaxed);
-        while VINT_FLAG.load(atomic::Ordering::Relaxed) {
-            super::stop::<1>();
-        }
-    }
-
-    #[inline]
-    pub fn status() -> Status {
-        Status(unsafe {
-            ptr::read_volatile(VDP_CTRL_PORT as *mut u16)
-        })
-    }
-
-    #[inline]
-    #[deprecated]
-    pub fn write_data(data: u16) {
-        unsafe {
-            ptr::write_volatile(VDP_DATA_PORT as *mut u16, data);
-        }
-    }
-
-    #[inline]
-    pub fn write_tile_flags(tiles: &[TileFlags], addr: VRAMAddress, autoinc: Option<NonZero<u8>>) {
-        if let Some(inc) = autoinc {
-            WordCmd::set_reg(0xF, inc.get()).execute();
-        }
-        LongCmd::set_addr_w(Address::VRAM(addr), false, false).execute();
-        let (pairs, single) = tiles.as_chunks::<2>();
-        let mut i = 0u16;
-        while i < pairs.len() as u16  {
+    pub fn init(cs: cs::CriticalSection, settings: VDPSettings) -> Result<(), VDPSettings> {
+        if io::version().revision() > 0 {
+            const TMSS_REG: *mut u32 = 0xA14000 as _;
+            const TMSS_VAL: u32 = 0x53454741u32; // "SEGA" as a single long
             unsafe {
-                ptr::write_volatile(VDP_DATA_PORT as *mut [TileFlags; 2], pairs[i as usize]);
-            }
-            i += 1
-        }
-        if let Some(single) = single.get(0) {
-            unsafe {
-                ptr::write_volatile(VDP_DATA_PORT as *mut TileFlags, *single);
+                TMSS_REG.write_volatile(TMSS_VAL);   
             }
         }
+
+        STATE.borrow(cs).set(core::cell::RefCell::new(VDPState::from_settings(settings))).map_err(|state| state.into_inner().into_settings())?;
+
+        Self::borrow_mut(cs).apply_state();
+
+        Ok(())
     }
 
     #[inline]
-    #[deprecated]
-    pub fn set_address(addr: Address) {
-        LongCmd::set_addr_w(addr, false, false).execute();
-    }
-
-    #[inline]
-    #[deprecated]
-    pub fn set_autoinc(inc: u8) {
-        WordCmd::set_reg(15, inc).execute();
-    }
-
-    #[inline]
-    pub fn debug_alert(message: &[u8]) {
-        let (pairs, singles) = message.as_chunks::<2>();
-        for pair in pairs {
-            LongCmd::from_words(WordCmd::set_reg(30, pair[0]), WordCmd::set_reg(30, pair[1])).execute();
-        }
-
-        if let Some(single) = singles.get(0) {
-            LongCmd::from_words(WordCmd::set_reg(30, *single), WordCmd::set_reg(30, 0)).execute();
-        } else {
-            WordCmd::set_reg(30, 0).execute();
+    pub fn borrow<'cs>(cs: cs::CriticalSection<'cs>) -> VDPRef<'cs> {
+        VDPRef {
+            state: STATE.borrow(cs).get().expect("VDP wasn't initialized!").borrow(),
+            port: unsafe { VDPPort::steal_ptr() },
+            phantom: core::marker::PhantomData
         }
     }
 
     #[inline]
-    pub fn debug_halt() {
-        WordCmd::set_reg(29, 0).execute();
+    pub fn borrow_mut<'cs>(cs: cs::CriticalSection<'cs>) -> VDPRefMut<'cs> {
+        VDPRefMut {
+            state: STATE.borrow(cs).get().expect("VDP wasn't initialized!").borrow_mut(),
+            port: unsafe { VDPPort::steal_mut_ptr() },
+            phantom: core::marker::PhantomData
+        }
     }
 }
+
+pub struct VDPRef<'cs> {
+    port: *const VDPPort,
+    state: core::cell::Ref<'cs, VDPState>,
+    phantom: core::marker::PhantomData<&'cs VDPPort>,
+}
+
+pub struct VDPRefMut<'cs> {
+    port: *mut VDPPort,
+    state: core::cell::RefMut<'cs, VDPState>,
+    phantom: core::marker::PhantomData<&'cs mut VDPPort>,
+}
+
+#[allow(private_interfaces)]
+mod sealed_access {
+    use super::*;
+
+    pub trait SealedShared {
+        fn port(&self) -> &VDPPort;
+        fn state(&self) -> &VDPState;
+    }
+
+    pub trait SealedExclusive: SealedShared {
+        fn port_mut(&self) -> &mut VDPPort;
+        fn state_mut(&mut self) -> &mut VDPState;
+    }
+
+    impl<'cs> SealedShared for VDPRef<'cs> {
+        fn port(&self) -> &VDPPort {
+            unsafe { &*self.port }
+        }
+    
+        fn state(&self) -> &VDPState {
+            &self.state
+        }
+    }
+
+    impl<'cs> SealedShared for VDPRefMut<'cs> {
+        fn port(&self) -> &VDPPort {
+            unsafe { &*self.port }
+        }
+    
+        fn state(&self) -> &VDPState {
+            &self.state
+        }
+    }
+
+    impl<'cs> SealedExclusive for VDPRefMut<'cs> {
+        fn port_mut(&self) -> &mut VDPPort {
+            unsafe { &mut *self.port }
+        }
+
+        fn state_mut(&mut self) -> &mut VDPState {
+            &mut self.state
+        }
+    }
+}
+
+pub trait SharedVDPAccess: sealed_access::SealedShared {
+    #[inline]
+    fn mode(&self) -> Mode {
+        self.state().mode()
+    }
+
+    #[inline]
+    fn plane_a_addr(&self) -> VRAMAddress {
+        self.state().plane_a_addr()
+    }
+
+    #[inline]
+    fn plane_b_addr(&self) -> VRAMAddress {
+        self.state().plane_b_addr()
+    }
+
+    #[inline]
+    fn sprites_addr(&self) -> VRAMAddress {
+        self.state().sprites_addr()
+    }
+
+    #[inline]
+    fn window_addr(&self) -> VRAMAddress {
+        self.state().window_addr()
+    }
+
+    #[inline]
+    fn hscroll_addr(&self) -> VRAMAddress {
+        self.state().hscroll_addr()
+    }
+
+    #[inline]
+    fn window_h_clip(&self) -> WindowClip {
+        self.state().window_h_clip()
+    }
+
+    #[inline]
+    fn window_v_clip(&self) -> WindowClip {
+        self.state().window_v_clip()
+    }
+
+    #[inline]
+    fn plane_size(&self) -> PlaneSize {
+        self.state().plane_size()
+    }
+
+    #[inline]
+    fn background_color(&self) -> CRAMAddress {
+        self.state().background_color()
+    }
+
+    #[inline]
+    fn hint_interval(&self) -> u8 {
+        self.state().hint_interval()
+    }
+
+    #[inline]
+    fn status(&self) -> Status {
+        self.port().status()
+    }
+
+    #[inline]
+    fn hv_counter(&self) -> HVCounter {
+        self.port().hv_counter()
+    }
+
+    #[inline]
+    fn plane_a_tile_addr(&self, x: u8, y: u8) -> vdp::VRAMAddress {
+        self.state().plane_size().tile_offset_from(self.state().plane_a_addr(), x, y)
+    }
+
+    #[inline]
+    fn plane_b_tile_addr(&self, x: u8, y: u8) -> vdp::VRAMAddress {
+        self.state().plane_size().tile_offset_from(self.state().plane_b_addr(), x, y)
+    }
+
+    #[inline]
+    fn window_tile_addr(&self, x: u8, y: u8) -> vdp::VRAMAddress {
+        self.state().plane_size().tile_offset_from(self.state().window_addr(), x, y)
+    }
+}
+
+impl<T: sealed_access::SealedShared> SharedVDPAccess for T {} 
+
+pub trait ExclusiveVDPAccess: sealed_access::SealedExclusive + sealed_access::SealedShared + SharedVDPAccess {
+    #[inline(never)]
+    fn apply_state(&mut self) {
+        unsafe {
+            core::arch::asm!("nop");
+
+            // Mode registers
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::ModeSet0, self.state().mode[3].load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::ModeSet1, self.state().mode[2].load(atomic::Ordering::Relaxed)),
+            ]);
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::ModeSet2, self.state().mode[1].load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::ModeSet3, self.state().mode[0].load(atomic::Ordering::Relaxed)),
+            ]);
+
+            // Base addresses and plane size
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::PlaneAAddr, self.state().plane_a_addr.load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::PlaneBAddr, self.state().plane_b_addr.load(atomic::Ordering::Relaxed)),
+            ]);
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::SpriteAddr, self.state().sprites_addr.load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::HScrollAddr, self.state().hscroll_addr.load(atomic::Ordering::Relaxed)),
+            ]);
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::WindowAddr, self.state().window_addr.load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::PlaneSize, self.state().plane_size.load(atomic::Ordering::Relaxed)),
+            ]);
+
+            // Window clip
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::WindowHClip, self.state().window_h_clip.load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::WindowVClip, self.state().window_v_clip.load(atomic::Ordering::Relaxed)),
+            ]);
+
+            // Background color and horizontal interrupt interval
+            self.port_mut().execute_word_pair([
+                WordCmd::set_reg(Register::BackgroundColor, self.state().background_color.load(atomic::Ordering::Relaxed)),
+                WordCmd::set_reg(Register::HIntCounter, self.state().hint_interval.load(atomic::Ordering::Relaxed)),
+            ]);
+
+            core::arch::asm!("nop");
+        }
+    }
+
+    #[inline]
+    fn set_mode(&mut self, mode: Mode) {
+        const REGS: [Register; 4] = [Register::ModeSet3, Register::ModeSet2, Register::ModeSet1, Register::ModeSet0];
+        let mode_bytes = mode.bits().to_be_bytes();
+        self.state().mode.iter().zip(mode_bytes).zip(REGS).for_each(|((mode, value), reg): ((&atomic::AtomicU8, u8), Register)| {
+            if mode.load(atomic::Ordering::Relaxed) ^ value != 0 {
+                mode.store(value, atomic::Ordering::Relaxed);
+                unsafe { self.port_mut().execute_word(WordCmd::set_reg(reg, value)); }
+            }
+        });
+        // if self.state().mode_bytes() != mode_bytes {
+        //     const MODE_MASK: u32 = 0xFF_0F_FC_37; // The bits that actually do stuff.
+
+        //     let mask = (self.state().mode ^ mode) & Mode::from_bits_retain(MODE_MASK);
+
+        //     self.state_mut().mode ^= mask;
+
+        //     let mask_bytes = mask.bits().to_be_bytes();
+        //     let mode_bytes = self.state().mode.bits().to_be_bytes();
+        //     const REGS: [Register; 4] = [Register::ModeSet3, Register::ModeSet2, Register::ModeSet1, Register::ModeSet0];
+
+        //     mask_bytes.iter().copied().enumerate().filter_map(|(i, mask)| (mask != 0).then(|| (REGS[i], mode_bytes[i]))).for_each(|(reg, value)| {
+        //         unsafe { self.port_mut().execute_word(WordCmd::set_reg(reg, value)); }
+        //     });
+        // }
+    }
+
+    #[inline]
+    fn set_plane_a_addr(&mut self, addr: VRAMAddress) {
+        self.state_mut().set_plane_a_addr(addr);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::PlaneAAddr, self.state().plane_a_addr.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_plane_b_addr(&mut self, addr: VRAMAddress) {
+        self.state_mut().set_plane_b_addr(addr);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::PlaneBAddr, self.state().plane_b_addr.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_sprites_addr(&mut self, addr: VRAMAddress) {
+        self.state_mut().set_sprites_addr(addr);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::SpriteAddr, self.state().sprites_addr.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_window_addr(&mut self, addr: VRAMAddress) {
+        self.state_mut().set_window_addr(addr);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::WindowAddr, self.state().window_addr.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_hscroll_addr(&mut self, addr: VRAMAddress) {
+        self.state_mut().set_hscroll_addr(addr);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::HScrollAddr, self.state().hscroll_addr.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_window_h_clip(&mut self, clip: WindowClip) {
+        self.state_mut().set_window_h_clip(clip);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::WindowHClip, self.state().window_h_clip.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_window_v_clip(&mut self, clip: WindowClip) {
+        self.state_mut().set_window_v_clip(clip);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::WindowVClip, self.state().window_v_clip.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_plane_size(&mut self, size: PlaneSize) {
+        self.state_mut().set_plane_size(size);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::PlaneSize, self.state().plane_size.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_background_color(&mut self, color: CRAMAddress) {
+        self.state_mut().set_background_color(color);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::BackgroundColor, self.state().background_color.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn set_hint_interval(&mut self, interval: u8) {
+        self.state_mut().set_hint_interval(interval);
+        unsafe { 
+            self.port_mut().execute_word(
+                WordCmd::set_reg(Register::HIntCounter, self.state().hint_interval.load(atomic::Ordering::Relaxed))
+            ); 
+        }
+    }
+
+    #[inline]
+    fn stream(&mut self, address: Address, autoinc: impl Into<Option<u8>>) -> Stream<'_, Self> {
+        Stream::new(self, address, autoinc)
+    }
+
+    #[inline]
+    fn debug_writer(&mut self) -> DebugMessageWriter<'_, Self> {
+        DebugMessageWriter(self)
+    }
+
+    #[inline]
+    fn debug_halt(&mut self) {
+        unsafe { self.port_mut().execute_word(WordCmd::set_reg(mem::transmute(29u8), 0)); }
+    }
+}
+
+impl<T: sealed_access::SealedExclusive> ExclusiveVDPAccess for T {} 
+
+pub struct Stream<'a, A: ExclusiveVDPAccess + ?Sized> {
+    access: &'a mut A
+}
+
+impl<'a, A: ExclusiveVDPAccess + ?Sized> Stream<'a, A> {
+    #[inline]
+    fn new(access: &'a mut A, address: Address, autoinc: impl Into<Option<u8>>) -> Self {
+        unsafe {
+            if let Some(autoinc) = autoinc.into() {
+                access.port_mut().execute_word(WordCmd::set_reg(Register::AutoInc, autoinc));
+            }
+            access.port_mut().execute_long(LongCmd::write_addr(address, false, false));
+        }
+        Self {
+            access
+        }
+    }
+
+    #[inline]
+    pub fn write_word(&mut self, word: u16) {
+        unsafe { self.access.port_mut().write_word(word); }
+    }
+
+    #[inline]
+    pub fn write_word_pair(&mut self, words: [u16; 2]) {
+        unsafe { self.access.port_mut().write_word_pair(words); }
+    }
+
+    #[inline]
+    pub fn read_word(&mut self) -> u16 {
+        unsafe { self.access.port_mut().read_word() }
+    }
+
+    #[inline]
+    pub fn read_word_pair(&mut self) -> [u16; 2]{
+        unsafe { self.access.port_mut().read_word_pair() }
+    }
+
+    #[inline]
+    pub fn write_data<T: StreamData + ?Sized>(&mut self, data: impl AsRef<T>) {
+        data.as_ref().into_stream(self);
+    }
+
+    #[inline]
+    pub fn write_data_iter<T: StreamData>(&mut self, iter: impl IntoIterator<Item = T>) {
+        for data in iter {
+            data.into_stream(self);
+        }
+    }
+
+    #[deprecated]
+    pub fn write_words_iter(self, iter: impl IntoIterator<Item = u16>) {
+        let mut iter = iter.into_iter();
+        unsafe {
+            loop {
+                match (iter.next(), iter.next()) {
+                    (None, None) => {
+                        break;
+                    },
+                    (Some(word), None) => {
+                        self.access.port_mut().write_word(word);
+                        break;
+                    },
+                    (Some(high), Some(low)) => {
+                        self.access.port_mut().write_word_pair([high, low]);
+                    },
+                    (None, Some(_)) => unreachable!(),
+                }
+            }
+        }
+    }
+}
+
+#[inline(always)]
+const fn can_use_pair_copy<T: Sized + Copy + bytemuck::NoUninit>() -> bool {
+    let size = size_of::<T>();
+    let align = align_of::<T>();
+    assert!(size & 1 != 0);
+    assert!(align & 1 != 0);
+    size & 2 == 0
+}
+
+pub trait StreamData: 'static {
+    fn into_stream(&self, stream: &mut Stream<impl ExclusiveVDPAccess + ?Sized>);
+}
+
+impl<T: Copy + Sized + bytemuck::NoUninit + 'static> StreamData for T {
+    fn into_stream(&self, stream: &mut Stream<impl ExclusiveVDPAccess + ?Sized>) {
+        if const {
+            let size = size_of::<T>();
+            let align = align_of::<T>();
+            assert!(size & 1 == 0);
+            assert!(align & 1 == 0);
+            size & 2 == 0
+        } {
+            let slice = bytemuck::cast_slice::<_, [u16; 2]>(core::slice::from_ref(self));
+            for pair in slice {
+                stream.write_word_pair(*pair);
+            }
+        } else {
+            let slice = bytemuck::cast_slice::<_, u16>(core::slice::from_ref(self));
+            let (pairs, extras) = slice.as_chunks::<2>();
+            for pair in pairs {
+                stream.write_word_pair(*pair);
+            }
+            for extra in extras {
+                stream.write_word(*extra);
+            }
+        }
+    }
+}
+
+impl<T: Copy + Sized + bytemuck::NoUninit> StreamData for [T] {
+    fn into_stream(&self, stream: &mut Stream<impl ExclusiveVDPAccess + ?Sized>) {
+        if const {
+            let size = size_of::<T>();
+            let align = align_of::<T>();
+            assert!(size & 1 == 0);
+            assert!(align & 1 == 0);
+            size & 2 == 0
+        } {
+            let slice = bytemuck::cast_slice::<_, [u16; 2]>(self);
+            for pair in slice {
+                stream.write_word_pair(*pair);
+            }
+        } else {
+            let slice = bytemuck::cast_slice::<_, u16>(self);
+            let (pairs, extras) = slice.as_chunks::<2>();
+            for pair in pairs {
+                stream.write_word_pair(*pair);
+            }
+            for extra in extras {
+                stream.write_word(*extra);
+            }
+        }
+    }
+}
+
+pub struct DMATransfer<P: core::ops::Deref> {
+    cmd: DMACommand<'static>,
+    data: core::pin::Pin<P>,
+}
+
+impl<P: core::ops::Deref> DMATransfer<P> {
+    pub fn new<T: StreamData + ?Sized + 'static>(
+        data: core::pin::Pin<P>,
+        dest: Address,
+        autoinc: impl Into<Option<u8>>,
+    ) -> Self where P: core::ops::Deref<Target = T> {
+        Self { 
+            cmd: unsafe {
+                let data_ref = data.as_ref();
+                DMACommand::new_transfer(
+                    &*(&raw const *data_ref), 
+                    dest, 
+                    autoinc
+                )
+            }, 
+            data
+        }
+    }
+
+    pub fn data(&self) -> &P::Target {
+        self.data.as_ref().get_ref()
+    }
+
+    pub fn into_parts<'a>(self) -> (DMACommand<'a>, core::pin::Pin<P>) where P: 'a {
+        (self.cmd, self.data)
+    }
+
+    #[inline]
+    pub fn try_execute<A: ExclusiveVDPAccess>(self, access: &mut A) -> Result<core::pin::Pin<P>, Self> {
+        match self.cmd.try_execute(access) {
+            Ok(()) => Ok(self.data),
+            Err(_) => Err(self),
+        }
+    }
+
+    #[inline]
+    pub fn execute<A: ExclusiveVDPAccess>(self, access: &mut A) -> core::pin::Pin<P> {
+        self.cmd.execute(access);
+        self.data
+    }
+}
+
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DMACommand {
+#[derive(Debug, Clone, Copy)]
+pub struct DMACommand<'a> {
     cmds: [LongCmd; 4],
+    phantom: core::marker::PhantomData<&'a ()>
 }
 
-impl DMACommand {
-    #[inline]
-    pub fn new_transfer<T: VRAMData>(
-        src: &[T],
-        dst: Address,
-        autoinc: Option<NonZero<u8>>,
+impl<'a> DMACommand<'a> {
+    #[inline(always)]
+    pub fn new_transfer<T: StreamData + ?Sized>(
+        data: &'a T,
+        dest: Address,
+        autoinc: impl Into<Option<u8>>,
     ) -> Self {
-        let autoinc = autoinc.map_or(2, NonZero::get);
-        let addr = (src.as_ptr().addr() >> 1) as u32;
-        let len = ((src.len() * mem::size_of::<T>()) >> 1) as u16;
-        let cmds = [
-            LongCmd::from_words(WordCmd::set_reg(0x0F, autoinc), WordCmd::set_reg(0x17, (addr >> 16) as u8)),
-            LongCmd::from_words(WordCmd::set_reg(0x16, (addr >> 8) as u8), WordCmd::set_reg(0x15, addr as u8)),
-            LongCmd::from_words(WordCmd::set_reg(0x14, (len >> 8) as u8), WordCmd::set_reg(0x13, len as u8)),
-            LongCmd::set_addr_w(dst, true, false)
-        ];
+        let autoinc = autoinc.into().unwrap_or(2);
+        let len = (size_of_val(data) >> 1) as u16;
+        let addr = ((data as *const T).addr() >> 1) as u32;
+
         Self {
-            cmds,
+            cmds: [
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::DMALenH, (len >> 8) as u8), 
+                    WordCmd::set_reg(Register::DMALenL, len as u8)
+                ]),
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::AutoInc, autoinc), 
+                    WordCmd::set_reg(Register::DMAAddrH, (addr >> 16) as u8)
+                ]),
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::DMAAddrM, (addr >> 8) as u8), 
+                    WordCmd::set_reg(Register::DMAAddrL, addr as u8)
+                ]),
+                LongCmd::write_addr(dest, true, false)
+            ],
+            phantom: core::marker::PhantomData
         }
     }
 
     #[inline]
+    pub fn length(&self) -> u16 {
+        let [hi, lo] = self.cmds[0].split();
+        (((hi.0 as u8) as u16) << 8) | ((lo.0 as u8) as u16)
+    }
+
+    #[inline]
+    pub fn try_execute<A: ExclusiveVDPAccess>(self, access: &mut A) -> Result<(), Self> {
+        if access.status().contains(Status::DMA_ACTIVE) {
+            return Err(self);
+        }
+        unsafe {
+            access.port_mut().execute_long(self.cmds[0]);
+            access.port_mut().execute_long(self.cmds[1]);
+            access.port_mut().execute_long(self.cmds[2]);
+            if self.cmds[3].split()[0] == WordCmd(0) {
+                access.port_mut().write_word(self.cmds[3].split()[1].0);
+            } else {
+                access.port_mut().execute_long(self.cmds[3]);
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub fn execute<A: ExclusiveVDPAccess>(mut self, access: &mut A) {
+        while let Err(this) = self.try_execute(access) {
+            self = this;
+        }
+    }
+}
+
+impl DMACommand<'static> {
+    #[inline(always)]
     pub fn new_fill(
         dst: VRAMAddress,
         len: usize,
         val: u8,
-        autoinc: Option<NonZero<u8>>,
+        autoinc: impl Into<Option<u8>>,
     ) -> Self {
-        let autoinc = autoinc.map_or(1, NonZero::get);
+        let autoinc = autoinc.into().unwrap_or(1);
         let len = len as u16;
-        let cmds = [
-            LongCmd::from_words(WordCmd::set_reg(0x0F, autoinc), WordCmd::set_reg(0x17, 0x80)),
-            LongCmd::from_words(WordCmd::set_reg(0x14, (len >> 8) as u8), WordCmd::set_reg(0x13, len as u8)),
-            LongCmd::set_addr_w(Address::VRAM(dst), true, false),
-            LongCmd::from_words(WordCmd::NULL, WordCmd((val as u16) << 8))
-        ];
         Self {
-            cmds
+            cmds: [
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::DMALenH, (len >> 8) as u8), 
+                    WordCmd::set_reg(Register::DMALenL, len as u8)
+                ]),
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::AutoInc, autoinc), 
+                    WordCmd::set_reg(Register::DMAAddrH, 0x80)
+                ]),
+                LongCmd::write_addr(Address::VRAM(dst), true, false),
+                LongCmd::merge([
+                    WordCmd(0), 
+                    WordCmd((val as u16) << 8)
+                ]),
+            ],
+            phantom: core::marker::PhantomData
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn new_copy(
         src: VRAMAddress,
         dst: VRAMAddress,
         len: usize,
-        autoinc: Option<NonZero<u8>>,
+        autoinc: impl Into<Option<u8>>,
     ) -> Self {
-        let autoinc = autoinc.map_or(1, NonZero::get);
+        let autoinc = autoinc.into().unwrap_or(1);
         let addr = src.word_addr();
         let len = (len >> 1) as u16;
-        let cmds = [
-            LongCmd::from_words(WordCmd::set_reg(0x0F, autoinc), WordCmd::set_reg(0x17, 0xC0)),
-            LongCmd::from_words(WordCmd::set_reg(0x16, (addr >> 8) as u8), WordCmd::set_reg(0x15, addr as u8)),
-            LongCmd::from_words(WordCmd::set_reg(0x14, (len >> 8) as u8), WordCmd::set_reg(0x13, len as u8)),
-            LongCmd::set_addr_w(Address::VRAM(dst), true, true)
-        ];
         Self {
-            cmds
-        }
-    }
-
-    #[inline]
-    pub fn schedule(self) -> Result<(), Self> {
-        super::with_cs::<1, 7, _>(|cs| {
-            DMA_QUEUE.borrow_ref_mut(cs).push_back(self)
-        })
-    }
-
-    #[inline]
-    pub fn execute(self) {
-        unsafe {
-            core::arch::asm!(
-                "move.l ({cmds}),({ctrl})",
-                "move.l (4,{cmds}),({ctrl})",
-                "move.l (8,{cmds}),({ctrl})",
-                "cmpi.w #0,(12,{cmds})",
-                "beq  2f",
-                "move.l (12,{cmds}),{scratch}",
-                "move.l {scratch},({ctrl})",
-                "bra  3f",
-                "2:",
-                "move.w (14,{cmds}),(-4,{ctrl})",
-                "3:",
-                cmds = in(reg_addr) &raw const self,
-                ctrl = in(reg_addr) VDP_CTRL_PORT as *mut u32,
-                scratch = sym LONG_CMD_SCRATCH,
-            )
+            cmds: [
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::DMALenH, (len >> 8) as u8), 
+                    WordCmd::set_reg(Register::DMALenL, len as u8)
+                ]),
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::AutoInc, autoinc), 
+                    WordCmd::set_reg(Register::DMAAddrH, 0xC0)
+                ]),
+                LongCmd::merge([
+                    WordCmd::set_reg(Register::DMAAddrM, (addr >> 8) as u8), 
+                    WordCmd::set_reg(Register::DMAAddrL, addr as u8)
+                ]),
+                LongCmd::write_addr(Address::VRAM(dst), true, true)
+            ],
+            phantom: core::marker::PhantomData
         }
     }
 }
 
-#[repr(C)]
-struct DmaQueue<const N: usize> {
-    head: u8,
-    tail: u8,
-    full: bool,
-    data: [mem::MaybeUninit<DMACommand>; N]
-}
+pub struct DebugMessageWriter<'a, A: ExclusiveVDPAccess + ?Sized>(&'a mut A);
 
-impl<const N: usize> DmaQueue<N> {
-    pub const INIT: Self = Self {
-        head: 0,
-        tail: 0,
-        full: false,
-        data: const { [mem::MaybeUninit::uninit(); N] },
-    };
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.head == self.tail && !self.full
-    }
-
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.full
-    }
-
-    #[inline]
-    fn increment(&self, i: u8) -> u8 {
-        unsafe {
-            let out: u8;
-            core::arch::asm!(
-                "add.b  #1,{i}",
-                "cmpi.b  #{N},{i}",
-                "bne    2f",
-                "move.b #0,{i}",
-                "2:",
-                i = inout(reg_data) i => out,
-                N = const N,
-            );
-            out
-        }
-    }
-
-    #[inline]
-    fn decrement(&self, i: u8) -> u8 {
-        unsafe {
-            let out: u8;
-            core::arch::asm!(
-                "sub.b  #1,{i}",
-                "bcc    2f",
-                "move.b #{Nm1},{i}",
-                "2:",
-                i = inout(reg_data) i => out,
-                Nm1 = const N-1,
-            );
-            out
-        }
-    }
-
-    #[inline]
-    pub fn pop_front(&mut self) -> Option<DMACommand> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(unsafe { self.pop_front_unchecked() })
-        }
-    }
-
-    #[inline]
-    pub fn pop_back(&mut self) -> Option<DMACommand> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(unsafe { self.pop_back_unchecked() })
-        }
-    }
-
-    #[inline]
-    pub fn push_front(&mut self, value: DMACommand) -> Result<(), DMACommand> {
-        if self.is_full() {
-            Err(value)
-        } else {
-            unsafe { self.push_front_unchecked(value) }
-            Ok(())
-        }
-    }
-
-    #[inline]
-    pub fn push_back(&mut self, value: DMACommand) -> Result<(), DMACommand> {
-        if self.is_full() {
-            Err(value)
-        } else {
-            unsafe { self.push_back_unchecked(value) }
-            Ok(())
-        }
-    }
-
-    #[inline]
-    pub unsafe fn pop_front_unchecked(&mut self) -> DMACommand {
-        let index = self.head as usize;
-        self.full = false;
-        self.head = self.increment(self.head);
-        self.data.get_unchecked_mut(index).assume_init_read()
-    }
-
-    #[inline]
-    pub unsafe fn pop_back_unchecked(&mut self) -> DMACommand {
-        self.full = false;
-        self.tail = self.decrement(self.tail);
-        self.data.get_unchecked_mut(self.tail as usize).assume_init_read()
-    }
-
-    #[inline]
-    pub unsafe fn push_front_unchecked(&mut self, value: DMACommand) {
-        let index = self.decrement(self.head) as usize;
-        self.data.get_unchecked_mut(index).write(value);
-        self.head = index as u8;
-        if self.head == self.tail {
-            self.full = true;
-        }
-    }
-
-    #[inline]
-    pub unsafe fn push_back_unchecked(&mut self, value: DMACommand) {
-        self.data.get_unchecked_mut(self.tail as usize).write(value);
-        self.tail = self.increment(self.tail);
-        if self.head == self.tail {
-            self.full = true;
-        }
+impl<'a, A: ExclusiveVDPAccess + ?Sized> DebugMessageWriter<'a, A> {
+    #[inline(always)]
+    fn write_byte(&mut self, val: Option<NonZero<u8>>) {
+        unsafe { self.0.port_mut().execute_word(WordCmd::set_reg(mem::transmute(30u8), val.map_or(0, NonZero::get))); }
     }
 }
 
-static DMA_QUEUE: cs::Mutex<cell::RefCell<DmaQueue<32>>> = cs::Mutex::new(cell::RefCell::new(DmaQueue::INIT));
-
-static VINT_FLAG: atomic::AtomicBool = atomic::AtomicBool::new(false);
-
-static HINT_FLAG: atomic::AtomicBool = atomic::AtomicBool::new(false);
-
-static mut VINT_HANDLER: mem::MaybeUninit<Option<fn(cs::CriticalSection)>> = mem::MaybeUninit::uninit();
-
-static mut HINT_HANDLER: mem::MaybeUninit<fn()> = mem::MaybeUninit::uninit();
-
-/// The vertical interrupt handler. 
-/// 
-/// This is called whenever the electron beam finishes the last scanline, and has entered the vertical blanking period.
-#[no_mangle]
-unsafe fn _vblank() {
-    
-    while !VDP::status().in_vblank() {
-        core::hint::spin_loop();
-    }
-
-    super::with_cs::<1, 7, _>(|cs| {
-
-        super::io::P1_CONTROLLER.update();
-        super::io::P2_CONTROLLER.update();
-
-        if VDP::status().dma_in_progress() {
-            return;
-        }
-
-        if VINT_FLAG.load(atomic::Ordering::Acquire) {
-            let handler = ptr::read_volatile(VINT_HANDLER.as_ptr()); // Read the handler pointer
-            if let Some(handler) = handler {
-                handler(cs)
-            }
-
-            VINT_FLAG.store(false, atomic::Ordering::Release);
-        }
-        let mut queue = DMA_QUEUE.borrow_ref_mut(cs);
-        'queue_loop: loop {
-            loop {
-                let status = VDP::status();
-                if !status.in_vblank() {
-                    break 'queue_loop;
-                }
-                if !status.dma_in_progress() {
-                    break;
-                }
-                core::arch::asm!("nop","nop","nop","nop"); // Waste a bunch of time
-            }
-            if let Some(cmd) = queue.pop_front() {
-                cmd.execute();
-            } else {
-                break;
-            }
-        }
-    });
-}
-
-#[no_mangle]
-unsafe fn _hblank() {
-    if HINT_FLAG.load(atomic::Ordering::Acquire) {
-        let handler = ptr::read_volatile(HINT_HANDLER.as_ptr()); // Read the handler pointer
-        handler();
+impl<'a, A: ExclusiveVDPAccess + ?Sized> Drop for DebugMessageWriter<'a, A> {
+    fn drop(&mut self) {
+        self.write_byte(None);
     }
 }
 
-#[no_mangle]
-unsafe fn _extint() {
-    
+impl<'a, A: ExclusiveVDPAccess + ?Sized> core::fmt::Write for DebugMessageWriter<'a, A> {
+    #[inline(never)]
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for byte in s.bytes() {
+            self.write_byte(match byte {
+                0x00..0x20 => None,
+                byte => NonZero::new(byte)
+            });
+        }
+        Ok(())
+    }
 }
+
+pub struct TileMessageWriter<'a, A: ExclusiveVDPAccess + ?Sized>(Stream<'a, A>, TileFlags);
